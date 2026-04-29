@@ -7,96 +7,127 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <h1>Random Die Roller</h1>
-
   <div class="layout">
     <section class="card config-card">
-      <h2>Configure</h2>
-
-      <p class="muted">Enter custom text for each side:</p>
-
-      <!-- Side inputs injected here -->
-      <div id="sideLabels"></div>
-
-      <div style="margin-top: 14px; display:flex; gap:10px;">
-        <button id="addSideBtn" class="btn-small" type="button" title="Add another side">+ Add side</button>
+      <div class="config-top-row">
+        <div class="config-status">
+          <div class="result config-heading">Configure</div>
+          <p class="muted small config-intro-line">Enter custom text for each side:</p>
+        </div>
+        <div class="panel-toggle-row toggle-mobile-config">
+          <button
+            type="button"
+            class="btn-small toggle-panel-btn"
+            data-toggle-panel
+            title="Return to the die"
+          >
+            View die
+          </button>
+        </div>
       </div>
 
-      <p class="muted small" style="margin-top: 12px;" id="sidesInfo"></p>
+      <textarea
+        id="sideLabels"
+        rows="10"
+        placeholder="One side per line&#10;Example:&#10;Yes&#10;No&#10;Maybe"
+      ></textarea>
+
+      <div class="sides-info-row">
+        <p class="muted small sides-info-label" id="sidesInfo"></p>
+        <button
+          id="resetSidesBtn"
+          type="button"
+          class="btn-small"
+          title="Reset to six default sides (Side 1 … Side 6)"
+        >
+          Reset Sides
+        </button>
+      </div>
     </section>
 
     <section class="card roll-card">
-      <h2>Roll</h2>
-      <div id="resultWrap" class="result" aria-live="polite"></div>
-      <div id="rollMeta" class="muted small"></div>
+      <div class="roll-top-row">
+        <div class="roll-status">
+          <div id="resultWrap" class="result" aria-live="polite"></div>
+          <div id="rollMeta" class="muted small"></div>
+        </div>
+
+        <div class="panel-toggle-row toggle-desktop">
+          <button
+            id="toggleTrackingPanelBtn"
+            type="button"
+            class="btn-small toggle-panel-btn"
+            data-toggle-panel
+            title="Toggle between roll and configuration"
+          >
+            Show stats
+          </button>
+        </div>
+      </div>
 
       <hr />
 
-      <div class="panel-toggle-row">
-        <button
-          id="toggleTrackingPanelBtn"
-          type="button"
-          class="btn-small"
-          title="Toggle between stats and a die render"
-        >
-          Show render
-        </button>
-      </div>
+      <div class="roll-body">
+        <div id="statsPanel">
+          <div class="stats-desktop-only">
+            <div class="stats-top-row" style="margin-top: 10px;">
+              <div class="stats-top-left">
+                <div class="stats-top-left-row">
+                  <button
+                    id="resetCounts"
+                    type="button"
+                    class="btn-small"
+                    title="Clears roll counts (history kept)"
+                  >
+                    Reset rolls
+                  </button>
+                  <h3>Roll tracking</h3>
+                </div>
 
-      <div id="statsPanel">
-        <div class="roll-tracking-header">
-          <h3>Roll tracking</h3>
-          <button
-            id="resetCounts"
-            type="button"
-            class="btn-small"
-            title="Clears roll counts (history kept)"
-          >
-            Reset rolls
-          </button>
+                <div class="small muted" id="totals"></div>
+              </div>
+
+              <button
+                id="rollBtnStats"
+                type="button"
+                class="roll-btn"
+                title="Roll the die"
+              >
+                Roll the die
+              </button>
+            </div>
+
+            <div style="margin-top: 10px;">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Side</th>
+                    <th>Text</th>
+                    <th>Count</th>
+                  </tr>
+                </thead>
+                <tbody id="countsBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="mobile-history-block">
+            <div class="history-header" style="margin-top: 14px;">
+              <p class="muted" style="margin:0;">History (latest first):</p>
+              <button
+                id="resetHistoryBtn"
+                type="button"
+                class="btn-small"
+                title="Clears roll history only"
+              >
+                Reset history
+              </button>
+            </div>
+            <div id="history" class="history"></div>
+          </div>
         </div>
 
-        <div style="margin-top: 10px;">
-          <button
-            id="rollBtnStats"
-            type="button"
-            style="width:100%;"
-            title="Roll the die"
-          >
-            Roll the die
-          </button>
-        </div>
-
-        <div class="small muted" id="totals"></div>
-
-        <div style="margin-top: 10px;">
-          <table>
-            <thead>
-              <tr>
-                <th>Side</th>
-                <th>Text</th>
-                <th>Count</th>
-              </tr>
-            </thead>
-            <tbody id="countsBody"></tbody>
-          </table>
-        </div>
-
-        <div class="history-header" style="margin-top: 14px;">
-          <p class="muted" style="margin:0;">History (latest first):</p>
-          <button
-            id="resetHistoryBtn"
-            type="button"
-            class="btn-small"
-            title="Clears roll history only"
-          >
-            Reset history
-          </button>
-        </div>
-        <div id="history" class="history"></div>
-      </div>
-
-      <div id="renderPanel" class="hidden">
+        <div id="renderPanel" class="hidden">
         <div class="die-stage">
           <div class="die3d-wrap">
             <div id="die3d" class="die3d" aria-live="polite">
@@ -108,21 +139,28 @@
               <div class="cube-face cube-bottom"><div class="cube-face-text" data-die3d-text></div></div>
             </div>
           </div>
-
-          <div style="margin-top: 20px; width:100%;">
-            <button
-              id="rollBtnRender"
-              type="button"
-              style="width:100%;"
-              title="Roll the die"
-            >
-              Roll the die
-            </button>
-          </div>
         </div>
+
+        <div class="render-roll-btn-row">
+          <p class="mobile-tap-to-roll-hint" id="mobileTapToRollHint" aria-live="polite">
+            Tap to Roll!
+          </p>
+          <button
+            id="rollBtnRender"
+            type="button"
+            class="roll-btn roll-btn-render-desktop"
+            style="width:100%;"
+            title="Roll the die"
+          >
+            Roll the die
+          </button>
+        </div>
+      </div>
       </div>
     </section>
   </div>
+
+  <div id="mobileConfigSheet" class="mobile-config-sheet" aria-hidden="true"></div>
 
   <script src="app.js"></script>
   <script type="text/plain" id="deprecated-inline-script">
