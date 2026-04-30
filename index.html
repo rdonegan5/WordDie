@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Random Die Roller</title>
   <link rel="stylesheet" href="styles.css" />
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.180.0/three.module.min.js",
+        "three/addons/": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.180.0/examples/jsm/"
+      }
+    }
+  </script>
 </head>
 <body>
   <div class="layout">
@@ -97,18 +106,7 @@
               </button>
             </div>
 
-            <div style="margin-top: 10px;">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Side</th>
-                    <th>Text</th>
-                    <th>Count</th>
-                  </tr>
-                </thead>
-                <tbody id="countsBody"></tbody>
-              </table>
-            </div>
+            <div class="counts-table-wrap" id="countsTables"></div>
           </div>
 
           <div class="mobile-history-block">
@@ -129,15 +127,8 @@
 
         <div id="renderPanel" class="hidden">
         <div class="die-stage">
-          <div class="die3d-wrap">
-            <div id="die3d" class="die3d" aria-live="polite">
-              <div class="cube-face cube-front"><div class="cube-face-text" data-die3d-text></div></div>
-              <div class="cube-face cube-right"><div class="cube-face-text" data-die3d-text></div></div>
-              <div class="cube-face cube-back"><div class="cube-face-text" data-die3d-text></div></div>
-              <div class="cube-face cube-left"><div class="cube-face-text" data-die3d-text></div></div>
-              <div class="cube-face cube-top"><div class="cube-face-text" data-die3d-text></div></div>
-              <div class="cube-face cube-bottom"><div class="cube-face-text" data-die3d-text></div></div>
-            </div>
+          <div class="dice-scroll">
+            <div id="threeRoot" class="three-root" aria-live="polite"></div>
           </div>
         </div>
 
@@ -162,7 +153,7 @@
 
   <div id="mobileConfigSheet" class="mobile-config-sheet" aria-hidden="true"></div>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
   <script type="text/plain" id="deprecated-inline-script">
     const STORAGE_KEY = "random_die_v2";
 

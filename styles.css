@@ -53,6 +53,36 @@
   box-sizing: border-box;
 }
 
+/* Scrollbars (Firefox + WebKit) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #4d5d78 rgba(255, 255, 255, 0.06);
+}
+
+*::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #2a3446 0%, #4d5d78 100%);
+  border: 1px solid var(--btn-border);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #34405a 0%, #5b6f92 100%);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 html {
   height: 100%;
   overflow: hidden;
@@ -121,8 +151,22 @@ body {
 
 .roll-body {
   flex: 1 1 auto;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   min-height: 0; /* allow flex children to shrink for scrolling */
+}
+
+#statsPanel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.counts-table-wrap {
+  margin-top: 10px;
 }
 
 .mobile-tap-to-roll-hint {
@@ -161,6 +205,69 @@ body {
 
   .toggle-mobile-config {
     display: none !important;
+  }
+
+  /* Desktop: split vertical space between table and history (max 50% each),
+     with the table section having priority. */
+  .stats-desktop-only {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 2 1 0;
+    max-height: 50%;
+    overflow: hidden;
+  }
+
+  .counts-table-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .mobile-history-block {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    max-height: 50%;
+    margin-top: auto; /* anchor to bottom of #statsPanel */
+    overflow: hidden; /* keep inner scrolling inside .history */
+  }
+
+  /* Desktop: history grows in stages so it doesn't jump to full height on first roll */
+  .mobile-history-block.history-grow-0 {
+    flex: 0 0 auto;
+    max-height: none;
+    min-height: 84px; /* ensure "No rolls yet." stays visible */
+  }
+
+  .mobile-history-block.history-grow-1 {
+    flex: 0 0 auto;
+    min-height: 140px;
+    max-height: 22%;
+  }
+
+  .mobile-history-block.history-grow-2 {
+    flex: 0 0 auto;
+    min-height: 180px;
+    max-height: 35%;
+  }
+
+  .mobile-history-block.history-grow-3 {
+    flex: 1 1 0;
+    min-height: 220px;
+    max-height: 50%;
+  }
+
+  .mobile-history-block .history-header {
+    margin-top: 14px;
+    flex: 0 0 auto;
+  }
+
+  .history {
+    max-height: none;
+    flex: 1 1 0;
+    min-height: 56px;
   }
 }
 
@@ -619,6 +726,65 @@ button:active:not(:disabled) {
     inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
+@media (min-width: 901px) {
+  /* Desktop: history should grow (no 260px cap) and sit at bottom */
+  .stats-desktop-only {
+    flex: 2 1 0;
+    min-height: 0;
+    max-height: 50%;
+    overflow: hidden;
+  }
+
+  .counts-table-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .mobile-history-block {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    max-height: 50%;
+    overflow: hidden;
+  }
+
+  .mobile-history-block.history-grow-0 {
+    flex: 0 0 auto;
+    max-height: none;
+    min-height: 84px;
+  }
+
+  .mobile-history-block.history-grow-1 {
+    flex: 0 0 auto;
+    min-height: 140px;
+    max-height: 22%;
+  }
+
+  .mobile-history-block.history-grow-2 {
+    flex: 0 0 auto;
+    min-height: 180px;
+    max-height: 35%;
+  }
+
+  .mobile-history-block.history-grow-3 {
+    flex: 1 1 0;
+    max-height: 50%;
+    min-height: 220px;
+  }
+
+  .mobile-history-block .history-header {
+    flex: 0 0 auto;
+  }
+
+  .history {
+    max-height: none;
+    flex: 1 1 0;
+    min-height: 0;
+  }
+}
+
 .hist-item {
   padding: 6px 0;
   border-bottom: none;
@@ -640,6 +806,22 @@ table {
   width: 100%;
   border-collapse: collapse;
 }
+
+.counts-table-card + .counts-table-card {
+  margin-top: 14px;
+}
+
+.counts-table-title {
+  font-weight: 800;
+  margin: 2px 0 8px;
+  padding-left: 10px;
+  border-left: 3px solid var(--die-accent, rgba(140, 175, 255, 0.35));
+}
+
+.counts-table-title.die-color-0 { --die-accent: #e14b4b; }
+.counts-table-title.die-color-1 { --die-accent: #4b86ff; }
+.counts-table-title.die-color-2 { --die-accent: #f2c94c; }
+.counts-table-title.die-color-3 { --die-accent: #34c26a; }
 
 th,
 td {
@@ -692,6 +874,7 @@ hr {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  overflow: auto;
 }
 
 .die-stage {
@@ -705,94 +888,27 @@ hr {
   min-height: 0;
 }
 
+.dice-scroll {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 6px; /* keep scrollbars off dice */
+  display: flex;
+}
+
+.three-root {
+  width: 100%;
+  margin: auto; /* center within scroll area when not overflowing */
+}
+
+.three-root canvas {
+  display: block;
+  margin: 0 auto;
+}
+
 .render-roll-btn-row {
   flex: 0 0 auto;
   margin-top: 12px;
-}
-
-.die3d-wrap {
-  width: 100%;
-  display: flex;
-  justify-content: center;
-}
-
-.die3d {
-  --cube-size: min(320px, 86vw);
-  --cube-half: calc(var(--cube-size) / 2);
-
-  width: var(--cube-size);
-  height: var(--cube-size);
-  position: relative;
-  transform-style: preserve-3d;
-  transform: rotateX(0deg) rotateY(0deg);
-  will-change: transform;
-}
-
-.die3d-wrap {
-  perspective: 900px;
-}
-
-.cube-face {
-  position: absolute;
-  inset: 0;
-  border-radius: 26px;
-  border: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(0, 0, 0, 0.12));
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    inset 0 -18px 36px rgba(15, 18, 24, 0.65),
-    inset 0 0 24px rgba(15, 18, 24, 0.35);
-  backface-visibility: hidden;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-}
-
-.cube-face-text {
-  width: 90%;
-  text-align: center;
-  font-weight: 900;
-  font-size: clamp(14px, 3vw, 22px);
-  line-height: 1.12;
-  padding: 0 8px;
-  word-break: break-word;
-  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
-}
-
-.cube-front {
-  transform: rotateY(0deg) translateZ(var(--cube-half));
-}
-.cube-back {
-  transform: rotateY(180deg) translateZ(var(--cube-half));
-}
-.cube-right {
-  transform: rotateY(90deg) translateZ(var(--cube-half));
-}
-.cube-left {
-  transform: rotateY(-90deg) translateZ(var(--cube-half));
-}
-.cube-top {
-  transform: rotateX(90deg) translateZ(var(--cube-half));
-}
-.cube-bottom {
-  transform: rotateX(-90deg) translateZ(var(--cube-half));
-}
-
-.die-pip-grid {
-  width: 70%;
-  max-width: 180px;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(3, 1fr);
-  gap: 10px;
-}
-
-.die-pip {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: rgba(232, 235, 240, 0.95);
-  box-shadow: 0 0 0 3px rgba(232, 235, 240, 0.08);
 }
 
