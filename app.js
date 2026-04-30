@@ -322,7 +322,8 @@ function renderCounts() {
     wrap.appendChild(card);
   });
 
-  $("totals").textContent = `Total rolls (all dice): ${grandTotal}`;
+  const totalsEl = $("totals");
+  if (totalsEl) totalsEl.textContent = `Total rolls (all dice): ${grandTotal}`;
 }
 
 function renderHistory() {
