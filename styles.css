@@ -478,6 +478,51 @@ body {
     display: none !important;
   }
 
+  /* Roll tab: dice + canvas feel continuous with the viewport background (no card frame). */
+  body.mobile-roll-view {
+    padding: 0;
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: var(--bg);
+  }
+
+  body.mobile-roll-view .layout {
+    gap: 0;
+  }
+
+  body.mobile-roll-view .roll-card.card {
+    background: transparent;
+    background-image: none;
+    box-shadow: none;
+    border-radius: 0;
+    padding: 0;
+  }
+
+  body.mobile-roll-view .roll-card > hr {
+    display: none;
+  }
+
+  body.mobile-roll-view .roll-top-row {
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 14px 8px;
+  }
+
+  body.mobile-roll-view #renderPanel,
+  body.mobile-roll-view .die-stage,
+  body.mobile-roll-view .dice-scroll {
+    background: transparent;
+  }
+
+  body.mobile-roll-view .render-roll-btn-row {
+    margin-top: 8px;
+    padding: 0 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+
+  body.mobile-roll-view .die-stage {
+    padding-top: 4px;
+    padding-bottom: 2px;
+  }
+
   .stats-desktop-only {
     display: none !important;
   }
@@ -523,23 +568,63 @@ body {
   flex: 0 0 auto;
 }
 
-.stats-top-row {
+.sides-info-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex: 0 0 auto;
 }
 
-.stats-top-left {
+.mobile-remove-sides-btn {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .mobile-remove-sides-btn {
+    display: block;
+    width: 100%;
+    margin-top: 10px;
+  }
+
+  .per-die-actions-wrap {
+    display: none !important;
+  }
+}
+
+.per-die-actions-wrap {
+  width: 100%;
+}
+
+.stats-top-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
   min-width: 0;
 }
 
-.stats-top-left {
+.stats-roll-btn-row {
+  flex: 1 1 0%;
+  display: flex;
   flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  align-self: stretch;
+  min-width: min(220px, 100%);
+  max-width: none;
+  margin-top: 0;
+  box-sizing: border-box;
+}
+
+.stats-top-left {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   align-items: flex-start;
+  flex: 1 1 0%;
+  min-width: min(11rem, 42%);
   gap: 6px;
 }
 
@@ -559,10 +644,9 @@ body {
   padding-bottom: 12px;
 }
 
-#rollBtnStats.roll-btn {
-  align-self: stretch;
-  min-width: 220px;
-  width: clamp(220px, 34%, 360px);
+.stats-roll-btn-row .roll-btn {
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -818,10 +902,36 @@ table {
   border-left: 3px solid var(--die-accent, rgba(140, 175, 255, 0.35));
 }
 
-.counts-table-title.die-color-0 { --die-accent: #e14b4b; }
-.counts-table-title.die-color-1 { --die-accent: #4b86ff; }
-.counts-table-title.die-color-2 { --die-accent: #f2c94c; }
-.counts-table-title.die-color-3 { --die-accent: #34c26a; }
+.counts-table-title.die-color-0,
+.die-color-0 { --die-accent: #e14b4b; }
+.counts-table-title.die-color-1,
+.die-color-1 { --die-accent: #4b86ff; }
+.counts-table-title.die-color-2,
+.die-color-2 { --die-accent: #f2c94c; }
+.counts-table-title.die-color-3,
+.die-color-3 { --die-accent: #34c26a; }
+.counts-table-title.die-color-4,
+.die-color-4 { --die-accent: #a96bff; }
+.counts-table-title.die-color-5,
+.die-color-5 { --die-accent: #ff944b; }
+.counts-table-title.die-color-6,
+.die-color-6 { --die-accent: #2fd2c9; }
+.counts-table-title.die-color-7,
+.die-color-7 { --die-accent: #ff5fa2; }
+
+.btn-small.die-per-action {
+  border-color: color-mix(in srgb, var(--die-accent, #8cafff) 50%, var(--btn-border));
+  background: color-mix(in srgb, var(--die-accent, #8cafff) 20%, var(--btn-bg));
+  color: var(--text);
+}
+
+.btn-small.die-per-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--die-accent, #8cafff) 30%, var(--btn-hover-bg));
+}
+
+.btn-small.die-per-action:disabled {
+  opacity: 0.45;
+}
 
 th,
 td {
@@ -910,5 +1020,40 @@ hr {
 .render-roll-btn-row {
   flex: 0 0 auto;
   margin-top: 12px;
+}
+
+.per-die-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--per-die-cols, 1), minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.die-per-action {
+  min-width: 0;
+}
+
+.stats-desktop-only .per-die-actions-grid {
+  justify-items: stretch;
+  flex: 0 0 auto;
+}
+
+/* Stats header: per-die grid can grow wider than the column; scroll here only so
+   “Roll the die” stays full-width and the tracking column is never overlapped. */
+.stats-roll-btn-row #perDieRollStats.per-die-actions-wrap {
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
+}
+
+.stats-roll-btn-row .per-die-actions-grid {
+  grid-template-columns: repeat(var(--per-die-cols, 1), minmax(4.75rem, auto));
+  width: max-content;
+  min-width: 100%;
 }
 

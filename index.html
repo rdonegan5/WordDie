@@ -43,14 +43,24 @@
 
       <div class="sides-info-row">
         <p class="muted small sides-info-label" id="sidesInfo"></p>
-        <button
-          id="resetSidesBtn"
-          type="button"
-          class="btn-small"
-          title="Reset to six default sides (Side 1 … Side 6)"
-        >
-          Reset Sides
-        </button>
+        <div class="sides-info-actions">
+          <button
+            id="reenableSidesBtn"
+            type="button"
+            class="btn-small"
+            title="Remove leading '-' from all sides so they can roll again"
+          >
+            Re-enable sides
+          </button>
+          <button
+            id="resetSidesBtn"
+            type="button"
+            class="btn-small"
+            title="Reset to six default sides (Side 1 … Side 6)"
+          >
+            Reset Sides
+          </button>
+        </div>
       </div>
     </section>
 
@@ -96,14 +106,18 @@
                 <div class="small muted" id="totals"></div>
               </div>
 
-              <button
-                id="rollBtnStats"
-                type="button"
-                class="roll-btn"
-                title="Roll the die"
-              >
-                Roll the die
-              </button>
+              <div class="stats-roll-btn-row">
+                <button
+                  id="rollBtnStats"
+                  type="button"
+                  class="roll-btn roll-btn-stats-desktop"
+                  style="width: 100%;"
+                  title="Roll the die"
+                >
+                  Roll the die
+                </button>
+                <div id="perDieRollStats" hidden aria-label="Roll individual dice"></div>
+              </div>
             </div>
 
             <div class="counts-table-wrap" id="countsTables"></div>
@@ -137,6 +151,15 @@
             Tap to Roll!
           </p>
           <button
+            type="button"
+            id="mobileRemoveSidesBtn"
+            class="btn-small mobile-remove-sides-btn"
+            disabled
+            title="Prefix '-' on each die's last rolled face so it is excluded from rolls"
+          >
+            Remove sides
+          </button>
+          <button
             id="rollBtnRender"
             type="button"
             class="roll-btn roll-btn-render-desktop"
@@ -145,6 +168,7 @@
           >
             Roll the die
           </button>
+          <div id="perDieRollRender" class="per-die-roll-row" hidden aria-label="Roll individual dice"></div>
         </div>
       </div>
       </div>
@@ -153,7 +177,7 @@
 
   <div id="mobileConfigSheet" class="mobile-config-sheet" aria-hidden="true"></div>
 
-  <script type="module" src="app.js?v=20260430_001"></script>
+  <script type="module" src="app.js?v=20260502_010"></script>
   <script type="text/plain" id="deprecated-inline-script">
     const STORAGE_KEY = "random_die_v2";
 

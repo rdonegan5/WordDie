@@ -16,7 +16,7 @@ const $ = (id) => document.getElementById(id);
 const MIN_SIDES = 2;
 
 // Die roll animation tuning (the actual 3D roll)
-const DIE_ROLL_DURATION_MULT = 2.35; // bigger = slower/longer roll
+const DIE_ROLL_DURATION_MULT = 3; // bigger = slower/longer roll
 const DIE_ROLL_SPINS_MIN = 4; // minimum full spins per axis
 const DIE_ROLL_SPINS_MAX = 8; // maximum full spins per axis
 
@@ -32,6 +32,46 @@ const ROLL_PEAK_SPEED = 1.0;
 const ROLL_RANDOM_PEAK_TIME_JITTER = 0.04;
 const ROLL_RANDOM_STOP_TIME_JITTER = 0.04;
 const ROLL_RANDOM_PEAK_SPEED_JITTER = 0.25;
+
+/** At full stress u=1, die body lerps this far toward white. */
+const ROLL_SPIN_WHITE_BLEND_MAX = 0.5;
+/** >1 slows stress buildup toward white. */
+const ROLL_SPIN_STRESS_RAMP_POWER = 1.55;
+/**
+ * After text onset (see ROLL_STRESS_TEXT_OMEGA_START_MULT), full label fade is reached over this fraction
+ * of the remaining ω span up to body `hi`. <1 ⇒ labels hit full fade before body goes fully white; >1 ⇒ later.
+ */
+const ROLL_SPIN_TEXT_THRESHOLD_MULT = 0.5;
+/** |dθ/dt| (rad/s) where body whiteness begins rising. */
+const ROLL_STRESS_OMEGA_START_RAD_S = 128;
+/** |dθ/dt| (rad/s) where body whiteness reaches full (before smoothstep/power). */
+const ROLL_STRESS_OMEGA_FULL_RAD_S = 256;
+/**
+ * Label ramp onset = body onset × this (same rad/s scale). 1 = same lower threshold as whiteness;
+ * <1 = text starts fading earlier; >1 = text stays opaque longer at low speed.
+ */
+const ROLL_STRESS_TEXT_OMEGA_START_MULT = 1;
+/** Lerp each frame toward raw u / uText (analytic spin rate is already smooth; keep small for extra stability). */
+const ROLL_STRESS_U_SMOOTH_ALPHA = 0.22;
+/** Centrifugal warp ramp vs same measured |ω| (rad/s), global — not spin count or duration. */
+const ROLL_CENTRIFUGAL_OMEGA_LO_RAD_S = 512;
+const ROLL_CENTRIFUGAL_OMEGA_HI_RAD_S = 6400;
+/** Chain re-rolls: multiply prior spinVelMul each time (capped). */
+const ROLL_CHAIN_VEL_MUL_STEP = 1.1;
+const ROLL_CHAIN_VEL_MUL_MAX = 5.5;
+/** Each chain re-roll multiplies spinChainAmp (capped). */
+const ROLL_CHAIN_SPIN_AMP_STEP = 0.13;
+const ROLL_CHAIN_SPIN_AMP_MAX = 1.7;
+/**
+ * Centrifugal warp: local X/Z (⊥ spin) expand by these fractions at drive=1; local Y is derived so volume stays ~constant.
+ * Spin axis maps to local +Y after aligning `spinDeformGroup`; U = local X, V = local Z.
+ */
+const ROLL_CENTRIFUGAL_TRANSVERSE_U_MAX = 0.5;
+const ROLL_CENTRIFUGAL_TRANSVERSE_V_MAX = 0.5;
+/** If true, axial scale Y = 1/((1+bu)(1+bv)). If false, use ROLL_CENTRIFUGAL_AXIAL_SCALE_PER_DRIVE instead. */
+const ROLL_CENTRIFUGAL_AXIAL_VOLUME_PRESERVE = true;
+/** When volume preserve is off: Y scale at drive=1 (typically < 1 squash). Ignored if AXIAL_VOLUME_PRESERVE. */
+const ROLL_CENTRIFUGAL_AXIAL_SCALE_AT_FULL = 0.1;
 
 function clampInt(n, min, max) {
   n = Number(n);
@@ -205,7 +245,7 @@ function parseDiceFromTextarea(textareaValue) {
 }
 
 function applyDiceLabels(nextDiceLabels) {
-  if (isRolling) cancelInFlightRoll();
+  if (anyDiceRollingVisual()) cancelInFlightRoll();
   ensureDiceArray();
   const next = Array.isArray(nextDiceLabels) ? nextDiceLabels : [];
   if (!next.length) next.push(Array.from({ length: 6 }, (_, i) => defaultLabel(i)));
@@ -232,7 +272,7 @@ function applyDiceLabels(nextDiceLabels) {
 
 /** Restore to a single default die (Side 1..Side 6). */
 function resetSidesToDefault() {
-  if (isRolling) cancelInFlightRoll();
+  if (anyDiceRollingVisual()) cancelInFlightRoll();
   state.dice = [{ labels: Array.from({ length: 6 }, (_, i) => defaultLabel(i)), counts: [], lastFace: null, lastText: "" }];
   normalizeStateAfterLoad();
   syncAllDiceFaceTextsFromState();
@@ -251,7 +291,7 @@ function renderSideInputs() {
   ensureDiceArray();
   const dice = state.dice;
   const sidesSummary = dice.map((d) => d.labels.length).join(", ");
-  $("sidesInfo").textContent = `Current dice: ${dice.length} — sides: ${sidesSummary} (blank line = new die)`;
+  $("sidesInfo").textContent = `Current dice: ${dice.length} — sides: ${sidesSummary} (blank line = new die; lines starting with "-" are ignored for rolls)`;
 
   // Avoid clobbering cursor while user is typing.
   if (document.activeElement !== textarea) {
@@ -271,7 +311,7 @@ function renderSideInputs() {
       $("rollMeta").textContent = "";
 
       const summary = state.dice.map((d) => d.labels.length).join(", ");
-      $("sidesInfo").textContent = `Current dice: ${state.dice.length} — sides: ${summary} (blank line = new die)`;
+      $("sidesInfo").textContent = `Current dice: ${state.dice.length} — sides: ${summary} (blank line = new die; lines starting with "-" are ignored for rolls)`;
     });
   }
 }
@@ -279,24 +319,25 @@ function renderSideInputs() {
 function renderCounts() {
   ensureDiceArray();
   const wrap = $("countsTables");
-  if (!wrap) return;
-  wrap.innerHTML = "";
 
   let grandTotal = 0;
 
-  state.dice.forEach((die, dieIdx) => {
-    const total = (die.counts || []).reduce((a, b) => a + (b || 0), 0);
-    grandTotal += total;
+  if (wrap) {
+    wrap.innerHTML = "";
 
-    const card = document.createElement("div");
-    card.className = "counts-table-card";
+    state.dice.forEach((die, dieIdx) => {
+      const total = (die.counts || []).reduce((a, b) => a + (b || 0), 0);
+      grandTotal += total;
 
-    const title = document.createElement("div");
-    title.className = `counts-table-title die-color-${dieIdx % 4}`;
-    title.textContent = `Die ${dieIdx + 1}`;
+      const card = document.createElement("div");
+      card.className = "counts-table-card";
 
-    const table = document.createElement("table");
-    table.innerHTML = `
+      const title = document.createElement("div");
+      title.className = `counts-table-title die-color-${dieIdx % 8}`;
+      title.textContent = `Die ${dieIdx + 1}`;
+
+      const table = document.createElement("table");
+      table.innerHTML = `
       <thead>
         <tr>
           <th>Side</th>
@@ -306,24 +347,28 @@ function renderCounts() {
       </thead>
       <tbody></tbody>
     `;
-    const tbody = table.querySelector("tbody");
-    for (let i = 0; i < die.labels.length; i++) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
+      const tbody = table.querySelector("tbody");
+      for (let i = 0; i < die.labels.length; i++) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
         <td>${i + 1}</td>
         <td>${escapeHtml(die.labels[i])}</td>
         <td>${die.counts[i] ?? 0}</td>
       `;
-      tbody.appendChild(tr);
-    }
+        tbody.appendChild(tr);
+      }
 
-    card.appendChild(title);
-    card.appendChild(table);
-    wrap.appendChild(card);
-  });
+      card.appendChild(title);
+      card.appendChild(table);
+      wrap.appendChild(card);
+    });
+  } else {
+    grandTotal = state.dice.reduce((sum, die) => sum + (die.counts || []).reduce((a, b) => a + (b || 0), 0), 0);
+  }
 
   const totalsEl = $("totals");
   if (totalsEl) totalsEl.textContent = `Total rolls (all dice): ${grandTotal}`;
+  renderPerDieRollButtons();
 }
 
 function renderHistory() {
@@ -336,6 +381,7 @@ function renderHistory() {
     box.innerHTML = `<div class="muted">No rolls yet.</div>`;
     historyBlock?.classList.remove("history-grow-1", "history-grow-2", "history-grow-3");
     historyBlock?.classList.add("history-grow-0");
+    syncMobileRemoveSidesBtn();
     return;
   }
 
@@ -364,6 +410,7 @@ function renderHistory() {
     div.textContent = `${new Date(h.ts).toLocaleString()} — ${msg || "—"}`;
     box.appendChild(div);
   }
+  syncMobileRemoveSidesBtn();
 }
 
 function dieName(dieIdx) {
@@ -379,7 +426,26 @@ function renderResult(results) {
     return;
   }
 
-  $("resultWrap").textContent = `You rolled: ${arr.map((r) => r.text).join(", ")}`;
+  const multi = Array.isArray(state.dice) && state.dice.length > 1;
+  const partial = multi && arr.length < state.dice.length;
+
+  let summaryLine;
+  if (partial) {
+    const textByDie = new Map(arr.map((r) => [r.die, r.text]));
+    summaryLine = state.dice
+      .map((die, i) => {
+        if (textByDie.has(i)) return textByDie.get(i);
+        const labels = Array.isArray(die?.labels) ? die.labels : [];
+        const kept =
+          typeof die?.lastText === "string" && die.lastText.length ? die.lastText : getLabelTextForMeshFace(labels, 0);
+        return kept;
+      })
+      .join(", ");
+  } else {
+    summaryLine = arr.map((r) => r.text).join(", ");
+  }
+
+  $("resultWrap").textContent = `You rolled: ${summaryLine}`;
   const shouldHideMeta = isMobileLayout() || (Array.isArray(state.dice) && state.dice.length > 2);
   if (shouldHideMeta) {
     $("rollMeta").textContent = "";
@@ -395,10 +461,10 @@ function renderResult(results) {
   }
 }
 
-// --- Three.js polyhedral renderer (D4/D6/D8/D12/D20) ---
+// --- Three.js polyhedral renderer (D3 triple-cylinder + D4/D6/D8/D10/D12/D20) ---
 let threeCtx = null;
 
-const SUPPORTED_DICE_SIDES = [4, 6, 8, 12, 20];
+const SUPPORTED_DICE_SIDES = [3, 4, 6, 8, 10, 12, 20];
 const DIE_COLORS = [
   0xe14b4b, // red
   0x4b86ff, // blue
@@ -419,34 +485,609 @@ function getDieHexColor(dieIdx) {
   return DIE_COLORS[dieIdx % DIE_COLORS.length] ?? 0x8cafFF;
 }
 
-function getGeometryForSides(n) {
-  // Return { geometry, faceCount } where faceCount is the logical face count (not triangles)
-  switch (n) {
-    case 4:
-      return { geometry: new THREE.TetrahedronGeometry(1, 0), faceCount: 4 };
-    case 6:
-      return { geometry: new THREE.BoxGeometry(1, 1, 1), faceCount: 6 };
-    case 8:
-      return { geometry: new THREE.OctahedronGeometry(1, 0), faceCount: 8 };
-    case 12:
-      return { geometry: new THREE.DodecahedronGeometry(1, 0), faceCount: 12 };
-    case 20:
-      return { geometry: new THREE.IcosahedronGeometry(1, 0), faceCount: 20 };
-    default:
-      return { geometry: new THREE.BoxGeometry(1, 1, 1), faceCount: 6 };
+function smoothstep01(x) {
+  const t = THREE.MathUtils.clamp(x, 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+const _cfYUp = new THREE.Vector3(0, 1, 0);
+const _cfInvParentQ = new THREE.Quaternion();
+const _cfLocalSpinAxis = new THREE.Vector3();
+const _cfAlignTarget = new THREE.Quaternion();
+const _cfIdent = new THREE.Quaternion();
+
+function resetDieRollingVisuals(ctx, dieIdx) {
+  const d = ctx?.dice?.[dieIdx];
+  if (!d?.mesh?.material?.color) return;
+  const hex = d.mesh.userData.baseDieColorHex ?? getDieHexColor(dieIdx);
+  d.mesh.material.color.setHex(hex);
+  if (d.spinDeformGroup) {
+    d.spinDeformGroup.scale.set(1, 1, 1);
+    d.spinDeformGroup.quaternion.identity();
+  }
+  for (const plane of d.labelPlanes || []) {
+    if (plane?.material) {
+      plane.material.opacity = 1;
+      plane.material.transparent = true;
+    }
   }
 }
 
-function getSidesForDieLabels(labels) {
-  const n = Array.isArray(labels) ? labels.length : 0;
-  // Use the largest supported die whose face count is <= provided labels.
-  // This matches "only use larger-sided die if there are enough sides available for it".
+/**
+ * |dθ/dt| for the tumble extra angle θ = (1−e)^1.001 × K with e = easeOutCubic(p), p = t/dur.
+ * Analytic derivative avoids finite-difference + wrapToPi noise (wobbling white/warp/text at high speed).
+ */
+function analyticTumbleSpinRateRadS(anim, nowMs, velMul, chainAmp) {
+  const durMs = Math.max(1, anim.dur);
+  const p = THREE.MathUtils.clamp((nowMs - anim.t0) / durMs, 0, 1);
+  const K = Math.max(0, anim.spins || 0) * (Math.PI * 2) * Math.max(0, velMul) * Math.max(1, chainAmp);
+  if (p >= 1 - 1e-9 || K <= 0) return 0;
+  const dpdt = 1000 / durMs;
+  const oneMinusP = 1 - p;
+  const depdp = 3 * oneMinusP * oneMinusP;
+  const e = 1 - oneMinusP * oneMinusP * oneMinusP;
+  const oneMinusE = 1 - e;
+  const dDecayDe = -1.001 * Math.pow(Math.max(1e-12, oneMinusE), 0.001);
+  const dThetadt = K * dDecayDe * depdp * dpdt;
+  return Math.abs(dThetadt);
+}
+
+/** Body + label stress from tumble spin rate (rad/s). */
+function computeRollingStressFromOmega(omega, textMult) {
+  if (omega == null || !Number.isFinite(omega) || omega <= 0) {
+    return { u: 0, uText: 0 };
+  }
+  const lo = ROLL_STRESS_OMEGA_START_RAD_S;
+  const hi = ROLL_STRESS_OMEGA_FULL_RAD_S;
+  const span = Math.max(1e-6, hi - lo);
+  const loText = THREE.MathUtils.clamp(
+    lo * Math.max(0.05, ROLL_STRESS_TEXT_OMEGA_START_MULT),
+    1e-6,
+    hi - 1e-6
+  );
+  const spanTextRemain = Math.max(1e-6, hi - loText);
+  const hiText = loText + spanTextRemain * Math.max(0.05, textMult);
+  const uLinearBody = THREE.MathUtils.clamp((omega - lo) / span, 0, 1);
+  const uLinearText = THREE.MathUtils.clamp((omega - loText) / Math.max(1e-6, hiText - loText), 0, 1);
+  const u = Math.pow(smoothstep01(uLinearBody), ROLL_SPIN_STRESS_RAMP_POWER);
+  const uText = Math.pow(smoothstep01(uLinearText), ROLL_SPIN_STRESS_RAMP_POWER);
+  return { u, uText };
+}
+
+function centrifugalWarpRampFromOmega(omega) {
+  if (omega == null || !Number.isFinite(omega) || omega <= 0) return 0;
+  const lo = ROLL_CENTRIFUGAL_OMEGA_LO_RAD_S;
+  const hi = ROLL_CENTRIFUGAL_OMEGA_HI_RAD_S;
+  return THREE.MathUtils.clamp((omega - lo) / Math.max(1e-6, hi - lo), 0, 1);
+}
+
+/**
+ * Centrifugal warp: expand local X (U) and Z (V) by bu,bv; shrink local Y (spin axis) for volume or fixed axial curve.
+ * Child `spinDeformGroup`: local +Y ↔ spin axis after alignment. Drive = smoothed stress u × warp ramp(|ω|).
+ */
+function applyRollingCentrifugalDeform(d, anim, precomputed) {
+  const g = d?.spinDeformGroup;
+  if (!g) return;
+  const { u, peakRamp } = precomputed;
+  if (u <= 0) {
+    g.scale.set(1, 1, 1);
+    g.quaternion.identity();
+    return;
+  }
+  const drive = u * peakRamp;
+  if (drive <= 0) {
+    g.scale.set(1, 1, 1);
+    g.quaternion.identity();
+    return;
+  }
+  const bu = ROLL_CENTRIFUGAL_TRANSVERSE_U_MAX * drive;
+  const bv = ROLL_CENTRIFUGAL_TRANSVERSE_V_MAX * drive;
+  const sx = 1 + bu;
+  const sz = 1 + bv;
+  let sy;
+  if (ROLL_CENTRIFUGAL_AXIAL_VOLUME_PRESERVE) {
+    sy = 1 / (sx * sz);
+  } else {
+    sy = THREE.MathUtils.lerp(1, ROLL_CENTRIFUGAL_AXIAL_SCALE_AT_FULL, drive);
+  }
+
+  _cfInvParentQ.copy(anim.obj.quaternion).invert();
+  _cfLocalSpinAxis.copy(anim.axis).normalize().applyQuaternion(_cfInvParentQ);
+  _cfAlignTarget.setFromUnitVectors(_cfYUp, _cfLocalSpinAxis);
+  const kBlend = Math.max(bu, bv);
+  const alignRef =
+    Math.max(ROLL_CENTRIFUGAL_TRANSVERSE_U_MAX, ROLL_CENTRIFUGAL_TRANSVERSE_V_MAX) * 0.22;
+  const alignBlend = THREE.MathUtils.smoothstep(kBlend / alignRef, 0, 1);
+  g.quaternion.slerpQuaternions(_cfIdent, _cfAlignTarget, alignBlend);
+
+  g.scale.set(sx, sy, sz);
+}
+
+function applyRollingVisualStress(ctx, dieIdx, u, uText) {
+  const d = ctx?.dice?.[dieIdx];
+  if (!d?.mesh?.material?.color) return;
+  const baseHex = d.mesh.userData.baseDieColorHex ?? getDieHexColor(dieIdx);
+  const base = new THREE.Color().setHex(baseHex);
+  const white = new THREE.Color(0xffffff);
+  d.mesh.material.color.copy(base).lerp(white, u * ROLL_SPIN_WHITE_BLEND_MAX);
+  const textOpacity = 1 - uText;
+  for (const plane of d.labelPlanes || []) {
+    if (plane?.material) {
+      plane.material.opacity = textOpacity;
+      plane.material.transparent = true;
+    }
+  }
+}
+
+/** Vertices 8 and 9 are the two poles (each touches 5 faces). Shorten pole-to-pole only (common tabletop D10 look); kites stay kite-shaped. */
+const D10_POLE_SQUASH = 0.66;
+
+function applyD10PoleAxisSquash(positionAttr, poleA, poleB, squash) {
+  const pos = positionAttr;
+  const n = pos.count;
+  if (n <= Math.max(poleA, poleB)) return;
+
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    pts.push(new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)));
+  }
+
+  let cx = 0;
+  let cy = 0;
+  let cz = 0;
+  for (const p of pts) {
+    cx += p.x;
+    cy += p.y;
+    cz += p.z;
+  }
+  cx /= n;
+  cy /= n;
+  cz /= n;
+  for (const p of pts) {
+    p.x -= cx;
+    p.y -= cy;
+    p.z -= cz;
+  }
+
+  const axis = new THREE.Vector3().subVectors(pts[poleB], pts[poleA]);
+  if (axis.lengthSq() < 1e-8) return;
+  axis.normalize();
+
+  for (let i = 0; i < n; i++) {
+    const s = pts[i].dot(axis);
+    pts[i].addScaledVector(axis, s * (squash - 1));
+  }
+
+  cx = 0;
+  cy = 0;
+  cz = 0;
+  for (const p of pts) {
+    cx += p.x;
+    cy += p.y;
+    cz += p.z;
+  }
+  cx /= n;
+  cy /= n;
+  cz /= n;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    pos.setXYZ(i, p.x - cx, p.y - cy, p.z - cz);
+  }
+  pos.needsUpdate = true;
+}
+
+/** Pentagon trapezohedron (standard D10): 10 congruent kite faces (4 verts each). Vertex data from dmccooey.com/polyhedra/PentagonalTrapezohedron */
+function createPentagonalTrapezohedronGeometry() {
+  const sqrt5 = Math.sqrt(5);
+  const C0 = (sqrt5 - 1) / 4;
+  const C1 = (1 + sqrt5) / 4;
+  const C2 = (3 + sqrt5) / 4;
+
+  const verts = [
+    [0, C0, C1],
+    [0, C0, -C1],
+    [0, -C0, C1],
+    [0, -C0, -C1],
+    [0.5, 0.5, 0.5],
+    [0.5, 0.5, -0.5],
+    [-0.5, -0.5, 0.5],
+    [-0.5, -0.5, -0.5],
+    [C2, -C1, 0],
+    [-C2, C1, 0],
+    [C0, C1, 0],
+    [-C0, -C1, 0],
+  ];
+
+  const faces = [
+    [8, 2, 6, 11],
+    [8, 11, 7, 3],
+    [8, 3, 1, 5],
+    [8, 5, 10, 4],
+    [8, 4, 0, 2],
+    [9, 0, 4, 10],
+    [9, 10, 5, 1],
+    [9, 1, 3, 7],
+    [9, 7, 11, 6],
+    [9, 6, 2, 0],
+  ];
+
+  const positions = new Float32Array(verts.length * 3);
+  for (let i = 0; i < verts.length; i++) {
+    positions[i * 3] = verts[i][0];
+    positions[i * 3 + 1] = verts[i][1];
+    positions[i * 3 + 2] = verts[i][2];
+  }
+
+  const indices = [];
+  for (const f of faces) {
+    const [a, b, c, d] = f;
+    indices.push(a, b, c, a, c, d);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  applyD10PoleAxisSquash(geometry.attributes.position, 8, 9, D10_POLE_SQUASH);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/**
+ * D3 solid = intersection of three perpendicular unit cylinders
+ *   x²+y²≤1, x²+z²≤1, y²+z²≤1  (“S-type” / three quarter-pipes through a cube).
+ *
+ * Mesh is NOT a radial warp of a sphere/cube (that inherits 6/8-way symmetry and looks “faceted”).
+ * We tessellate the **true outer boundary** as three trimmed cylindrical mantles:
+ *   • z-axis sheet: (cos θ, sin θ, z) with |z| ≤ min(|sin θ|, |cos θ|)
+ *   • x-axis sheet: (x, cos θ, sin θ) with |x| ≤ min(|sin θ|, |cos θ|)
+ *   • y-axis sheet: (cos θ, y, sin θ) with |y| ≤ min(|sin θ|, |cos θ|)
+ * θ ∈ [0, 2π). ~3 × 2 × nu × (nv−1) triangles.
+ */
+const D3_CYL_BAND_NU = 48;
+const D3_CYL_BAND_NV = 34;
+
+/** Outward normal on ∂{max(f1,f2,f3)≤0}; blend gradients where multiple constraints are active. */
+function tripleCylinderAnalyticalNormal(p, target) {
+  const x = p.x;
+  const y = p.y;
+  const z = p.z;
+  const f1 = x * x + y * y - 1;
+  const f2 = x * x + z * z - 1;
+  const f3 = y * y + z * z - 1;
+  const eps = 0.055;
+  target.set(0, 0, 0);
+  if (f1 > -eps) target.add(new THREE.Vector3(2 * x, 2 * y, 0));
+  if (f2 > -eps) target.add(new THREE.Vector3(2 * x, 0, 2 * z));
+  if (f3 > -eps) target.add(new THREE.Vector3(0, 2 * y, 2 * z));
+  if (target.lengthSq() < 1e-12) {
+    const r = x * x + y * y + z * z;
+    if (r > 1e-12) target.set(x, y, z).multiplyScalar(1 / Math.sqrt(r));
+    else target.set(0, 0, 1);
+  } else target.normalize();
+  return target;
+}
+
+function applyTripleCylinderAnalyticalNormals(geometry) {
+  const pos = geometry.attributes.position;
+  const nor = geometry.attributes.normal;
+  if (!nor || pos.count !== nor.count) {
+    geometry.computeVertexNormals();
+    return;
+  }
+  const p = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    p.fromBufferAttribute(pos, i);
+    tripleCylinderAnalyticalNormal(p, n);
+    nor.setXYZ(i, n.x, n.y, n.z);
+  }
+  nor.needsUpdate = true;
+}
+
+function d3CylinderTrimLimit(theta) {
+  return Math.min(Math.abs(Math.sin(theta)), Math.abs(Math.cos(theta)));
+}
+
+function createTripleCylinderIntersectionGeometry() {
+  const positions = [];
+  const indices = [];
+  const nu = D3_CYL_BAND_NU;
+  const nv = D3_CYL_BAND_NV;
+
+  function appendCylinderBand(axisMode) {
+    const base = (positions.length / 3) | 0;
+    for (let i = 0; i < nu; i++) {
+      const theta = (i / nu) * Math.PI * 2;
+      const c = Math.cos(theta);
+      const s = Math.sin(theta);
+      const lim = d3CylinderTrimLimit(theta);
+      for (let j = 0; j < nv; j++) {
+        const tv = nv <= 1 ? 0 : j / (nv - 1);
+        const al = (tv * 2 - 1) * lim;
+        let x;
+        let y;
+        let z;
+        if (axisMode === 0) {
+          x = c;
+          y = s;
+          z = al;
+        } else if (axisMode === 1) {
+          x = al;
+          y = c;
+          z = s;
+        } else {
+          x = c;
+          y = al;
+          z = s;
+        }
+        positions.push(x, y, z);
+      }
+    }
+    for (let i = 0; i < nu; i++) {
+      const i2 = (i + 1) % nu;
+      for (let j = 0; j < nv - 1; j++) {
+        const a = base + i * nv + j;
+        const b = base + i * nv + (j + 1);
+        const c0 = base + i2 * nv + j;
+        const d = base + i2 * nv + (j + 1);
+        indices.push(a, c0, b, b, c0, d);
+      }
+    }
+  }
+
+  appendCylinderBand(0);
+  appendCylinderBand(1);
+  appendCylinderBand(2);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+  geo.setIndex(indices);
+
+  const pa = geo.attributes.position;
+  geo.computeBoundingBox();
+  const cx = new THREE.Vector3();
+  geo.boundingBox.getCenter(cx);
+  for (let i = 0; i < pa.count; i++) {
+    pa.setXYZ(i, pa.getX(i) - cx.x, pa.getY(i) - cx.y, pa.getZ(i) - cx.z);
+  }
+  pa.needsUpdate = true;
+
+  geo.computeVertexNormals();
+  applyTripleCylinderAnalyticalNormals(geo);
+  return geo;
+}
+
+let _d3TripleCylinderTemplate = null;
+function cloneTripleCylinderGeometry() {
+  if (!_d3TripleCylinderTemplate) _d3TripleCylinderTemplate = createTripleCylinderIntersectionGeometry();
+  return _d3TripleCylinderTemplate.clone();
+}
+
+function d3CylinderBindingIndex(cx, cy, cz) {
+  const sxy = 1 - cx * cx - cy * cy;
+  const sxz = 1 - cx * cx - cz * cz;
+  const syz = 1 - cy * cy - cz * cz;
+  let b = 0;
+  let best = sxy;
+  if (sxz < best) {
+    best = sxz;
+    b = 1;
+  }
+  if (syz < best) b = 2;
+  return b;
+}
+
+/** Three curved “faces” = which cylinder constraint is tightest at each triangle. */
+function computeTripleCylinderFaceFeatures(geometry) {
+  const g = geometry.toNonIndexed();
+  const pos = g.getAttribute("position");
+  const k = 3;
+  const centerSums = Array.from({ length: k }, () => new THREE.Vector3());
+  const normalSums = Array.from({ length: k }, () => new THREE.Vector3());
+  const counts = Array(k).fill(0);
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const ctr = new THREE.Vector3();
+  const nrm = new THREE.Vector3();
+
+  for (let i = 0; i < pos.count; i += 3) {
+    a.fromBufferAttribute(pos, i);
+    b.fromBufferAttribute(pos, i + 1);
+    c.fromBufferAttribute(pos, i + 2);
+    ctr.copy(a).add(b).add(c).multiplyScalar(1 / 3);
+    const bi = d3CylinderBindingIndex(ctr.x, ctr.y, ctr.z);
+    tripleCylinderAnalyticalNormal(ctr, nrm);
+    centerSums[bi].add(ctr);
+    normalSums[bi].add(nrm);
+    counts[bi]++;
+  }
+
+  const out = [];
+  for (let L = 0; L < k; L++) {
+    const ns = normalSums[L];
+    const normal = ns.lengthSq() > 1e-10 ? ns.clone().normalize() : new THREE.Vector3(0, 0, 1);
+    const center = centerSums[L].clone().multiplyScalar(1 / Math.max(1, counts[L]));
+    out.push({ normal, center });
+  }
+
+  out.sort((p, q) => (p.normal.z - q.normal.z) || (p.normal.y - q.normal.y) || (p.normal.x - q.normal.x));
+  return out;
+}
+
+function getGeometryForSides(n) {
+  // Return { geometry, faceCount, faceLayout } — "lobes" = D3 triple-cylinder intersection mesh; "clusters" = planar face merging.
+  switch (n) {
+    case 3:
+      return { geometry: cloneTripleCylinderGeometry(), faceCount: 3, faceLayout: "lobes" };
+    case 4:
+      return { geometry: new THREE.TetrahedronGeometry(1, 0), faceCount: 4, faceLayout: "clusters" };
+    case 6:
+      return { geometry: new THREE.BoxGeometry(1, 1, 1), faceCount: 6, faceLayout: "clusters" };
+    case 8:
+      return { geometry: new THREE.OctahedronGeometry(1, 0), faceCount: 8, faceLayout: "clusters" };
+    case 10:
+      return {
+        geometry: createPentagonalTrapezohedronGeometry(),
+        faceCount: 10,
+        faceLayout: "clusters",
+      };
+    case 12:
+      return { geometry: new THREE.DodecahedronGeometry(1, 0), faceCount: 12, faceLayout: "clusters" };
+    case 20:
+      return { geometry: new THREE.IcosahedronGeometry(1, 0), faceCount: 20, faceLayout: "clusters" };
+    default:
+      return { geometry: new THREE.BoxGeometry(1, 1, 1), faceCount: 6, faceLayout: "clusters" };
+  }
+}
+
+/** Non-disabled lines only (in config order); "-" prefixes define disabled sides. */
+function getActiveFaceSlots(labels) {
+  const arr = Array.isArray(labels) ? labels : [];
+  const out = [];
+  for (let i = 0; i < arr.length; i++) {
+    if (!isSideLabelDisabled(arr[i])) out.push({ origIdx: i, text: arr[i] });
+  }
+  return out;
+}
+
+/**
+ * Polyhedron size from number of **eligible** sides (ignored "-" lines do not count).
+ * Same ladder as before: largest standard die whose face count fits.
+ */
+function getSidesForDieCount(m) {
+  const n = Math.max(0, m | 0);
   if (n >= 20) return 20;
   if (n >= 12) return 12;
+  if (n >= 10) return 10;
   if (n >= 8) return 8;
   if (n >= 6) return 6;
   if (n >= 4) return 4;
+  if (n >= 3) return 3;
   return 6;
+}
+
+function getSidesForDieLabels(labels) {
+  const m = getActiveFaceSlots(labels).length;
+  const effective = m === 0 ? MIN_SIDES : m;
+  return getSidesForDieCount(effective);
+}
+
+/** Lines prefixed with "-" in config are excluded from rolls and from die geometry (still stored). */
+function isSideLabelDisabled(label) {
+  const s = typeof label === "string" ? label.trimStart() : "";
+  return s.startsWith("-");
+}
+
+/** Label shown on mesh face index (0-based), using only active sides in order. */
+function getLabelTextForMeshFace(labels, faceIdx0) {
+  const active = getActiveFaceSlots(labels);
+  if (active.length === 0) return defaultLabel(faceIdx0);
+  const polySides = getSidesForDieCount(active.length);
+  const k = Math.min(active.length, polySides);
+  if (faceIdx0 < k) return active[faceIdx0].text;
+  return defaultLabel(faceIdx0);
+}
+
+/** Map current top mesh face (1-based) to textarea row index. */
+function meshFaceToOrigIdx(labels, face1Based) {
+  const active = getActiveFaceSlots(labels);
+  if (active.length === 0) return null;
+  const f = face1Based - 1;
+  const polySides = getSidesForDieCount(active.length);
+  const k = Math.min(active.length, polySides);
+  if (f < 0 || f >= k) return null;
+  return active[f].origIdx;
+}
+
+function pickRandomRollOutcome(labels) {
+  const active = getActiveFaceSlots(labels);
+  const m = active.length;
+  if (m === 0) {
+    const polySides = getSidesForDieCount(MIN_SIDES);
+    const slot = Math.floor(Math.random() * polySides);
+    return {
+      face: slot + 1,
+      origIdx: null,
+      text: defaultLabel(slot),
+      slot,
+    };
+  }
+  const polySides = getSidesForDieCount(m);
+  const k = Math.min(m, polySides);
+  const slot = Math.floor(Math.random() * k);
+  const entry = active[slot];
+  return {
+    face: slot + 1,
+    origIdx: entry.origIdx,
+    text: entry.text,
+    slot,
+  };
+}
+
+function applyDisablePrefixToLastFace(dieIdx) {
+  ensureDiceArray();
+  const die = state.dice[dieIdx];
+  if (!die) return false;
+  const face = die.lastFace;
+  if (!Number.isFinite(face) || face < 1) return false;
+  const labels = die.labels;
+  const origIdx = meshFaceToOrigIdx(labels, face);
+  if (origIdx == null) return false;
+  if (isSideLabelDisabled(labels[origIdx])) return false;
+  labels[origIdx] = `-${labels[origIdx]}`;
+  return true;
+}
+
+function commitSideLabelChanges({ clearRollMeta = false } = {}) {
+  saveState();
+  renderSideInputs();
+  renderCounts();
+  renderHistory();
+  if (clearRollMeta) $("rollMeta").textContent = "";
+  if (isDieRollView()) renderDiceFromLast({ animate: false });
+  renderPerDieRollButtons();
+  syncMobileRemoveSidesBtn();
+}
+
+function disableLastRolledFaceForDieAndSave(dieIdx) {
+  if (!applyDisablePrefixToLastFace(dieIdx)) return;
+  commitSideLabelChanges();
+}
+
+function disableLastRolledFacesAllDice() {
+  ensureDiceArray();
+  if (!state.history.length) return;
+  let changed = false;
+  for (let i = 0; i < state.dice.length; i++) {
+    if (applyDisablePrefixToLastFace(i)) changed = true;
+  }
+  if (!changed) return;
+  commitSideLabelChanges();
+}
+
+function reenableAllMarkedSides() {
+  if (anyDiceRollingVisual()) cancelInFlightRoll();
+  ensureDiceArray();
+  let changed = false;
+  for (const die of state.dice) {
+    die.labels = die.labels.map((lab, idx) => {
+      const s = typeof lab === "string" ? lab : "";
+      const t = s.trimStart();
+      if (!t.startsWith("-")) return lab;
+      changed = true;
+      const rest = t.slice(1).trimStart();
+      return rest.length ? rest : defaultLabel(idx);
+    });
+  }
+  if (!changed) return;
+  commitSideLabelChanges({ clearRollMeta: true });
+}
+
+function syncMobileRemoveSidesBtn() {
+  const btn = $("mobileRemoveSidesBtn");
+  if (!btn) return;
+  btn.disabled = !state.history.length;
 }
 
 function makeLabelTexture(text, { glow = false } = {}) {
@@ -572,9 +1213,10 @@ function initThree() {
   camera.position.set(0, 0, 800);
   camera.lookAt(0, 0, 0);
 
-  const ambient = new THREE.AmbientLight(0xffffff, 0.85);
-  const dir = new THREE.DirectionalLight(0xffffff, 0.9);
-  dir.position.set(1, 1.3, 2);
+  // Lower ambient + stronger key light so each face reads as a flat facet (closer to classic polyhedral dice).
+  const ambient = new THREE.AmbientLight(0xffffff, 0.58);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.12);
+  dir.position.set(1, 1.35, 2);
   scene.add(ambient, dir);
 
   threeCtx = {
@@ -610,20 +1252,38 @@ function startThreeRenderLoop() {
         if (p >= 1) {
           // Snap exactly to the target so we land perfectly flat.
           a.obj.quaternion.copy(a.q1);
+          if (typeof a.dieIdx === "number") resetDieRollingVisuals(threeCtx, a.dieIdx);
           return false;
         }
-        const e = p < 1 ? (1 - Math.pow(1 - p, 3)) : 1; // easeOutCubic
-        // Base slerp to target
+        const e = p < 1 ? 1 - Math.pow(1 - p, 3) : 1; // easeOutCubic
         const base = a._tmpQ || (a._tmpQ = new THREE.Quaternion());
         base.slerpQuaternions(a.q0, a.q1, e);
 
-        // Add extra spins that decay to 0 by the end (for a real roll feel)
         const extra = a._tmpExtra || (a._tmpExtra = new THREE.Quaternion());
-        const decay = Math.pow(1 - e, 1.15); // fade-out
-        const angle = decay * a.spins * Math.PI * 2;
+        const decay = Math.pow(1 - e, 1.001);
+        const velMul = typeof a.spinVelMul === "number" && a.spinVelMul > 0 ? a.spinVelMul : 1;
+        const chainAmp =
+          typeof a.spinChainAmp === "number" && a.spinChainAmp > 0 ? a.spinChainAmp : 1;
+        const angle = decay * (a.spins || 0) * Math.PI * 2 * velMul * chainAmp;
         extra.setFromAxisAngle(a.axis, angle);
 
+        const omega = analyticTumbleSpinRateRadS(a, now, velMul, chainAmp);
+
         a.obj.quaternion.copy(base).multiply(extra);
+        if (typeof a.dieIdx === "number") {
+          const d = threeCtx.dice[a.dieIdx];
+          const raw = computeRollingStressFromOmega(omega, ROLL_SPIN_TEXT_THRESHOLD_MULT);
+          const sm = ROLL_STRESS_U_SMOOTH_ALPHA;
+          const uBody = THREE.MathUtils.lerp(a._stressUBodySmooth ?? 0, raw.u, sm);
+          const uText = THREE.MathUtils.lerp(a._stressUTextSmooth ?? 0, raw.uText, sm);
+          a._stressUBodySmooth = uBody;
+          a._stressUTextSmooth = uText;
+          applyRollingVisualStress(threeCtx, a.dieIdx, uBody, uText);
+          if (d) {
+            const peakRamp = centrifugalWarpRampFromOmega(omega);
+            applyRollingCentrifugalDeform(d, a, { u: uBody, peakRamp });
+          }
+        }
         return p < 1;
       });
     }
@@ -701,35 +1361,45 @@ function syncDiceMeshesFromState() {
     const sides = getSidesForDieLabels(labels);
 
     const d = ctx.dice[i];
-    if (d.sides !== sides || !d.mesh) {
+    if (d.sides !== sides || !d.mesh || !d.spinDeformGroup) {
       // Rebuild mesh
       d.group.clear();
+      d.spinDeformGroup = null;
       d.labelPlanes = [];
       d.faces = [];
 
-      const { geometry, faceCount } = getGeometryForSides(sides);
+      const { geometry, faceCount, faceLayout } = getGeometryForSides(sides);
       geometry.computeBoundingSphere();
       const baseRadius = geometry.boundingSphere?.radius || 1;
 
+      const dieColorHex = getDieHexColor(i);
       const mat = new THREE.MeshStandardMaterial({
-        color: getDieHexColor(i),
-        roughness: 0.45,
-        metalness: 0.08,
+        color: dieColorHex,
+        roughness: sides === 3 ? 0.48 : 0.52,
+        metalness: sides === 3 ? 0.04 : 0.06,
+        flatShading: sides !== 3,
       });
 
       const mesh = new THREE.Mesh(geometry, mat);
+      mesh.userData.baseDieColorHex = dieColorHex;
       d.mesh = mesh;
       d.sides = sides;
-      d.group.add(mesh);
+      const spinDeformGroup = new THREE.Group();
+      d.spinDeformGroup = spinDeformGroup;
+      d.group.add(spinDeformGroup);
+      spinDeformGroup.add(mesh);
 
       // Scale to desired size
       const desiredRadius = (layout.diePx * 0.42);
       const s = desiredRadius / baseRadius;
       d.group.scale.setScalar(s);
 
-      // Face clusters + label planes (flush to face)
-      const clusters = computeFaceClusters(geometry);
-      d.faces = clusters.slice(0, faceCount);
+      if (faceLayout === "lobes") {
+        d.faces = computeTripleCylinderFaceFeatures(geometry);
+      } else {
+        const clusters = computeFaceClusters(geometry);
+        d.faces = clusters.slice(0, faceCount);
+      }
 
       const worldUp = new THREE.Vector3(0, 1, 0);
       const worldRight = new THREE.Vector3(1, 0, 0);
@@ -758,7 +1428,9 @@ function syncDiceMeshesFromState() {
       const labelSizeBySides = (sidesN) => {
         // Base sizes tuned to keep labels inside faces even after scaling.
         // (We apply FACE_TEXT_SCALE below.)
+        if (sidesN === 3) return 0.52; // triple-cylinder intersection patches
         if (sidesN === 4 || sidesN === 8 || sidesN === 20) return 0.56; // triangles
+        if (sidesN === 10) return 0.54; // kite quads (D10)
         if (sidesN === 12) return 0.58; // pentagons
         return 0.66; // squares (cube)
       };
@@ -775,7 +1447,7 @@ function syncDiceMeshesFromState() {
       };
 
       for (let f = 0; f < d.faces.length; f++) {
-        const text = labels[f] ?? defaultLabel(f);
+        const text = getLabelTextForMeshFace(labels, f);
         const tex = makeLabelTexture(text, { glow: false });
         const pm = new THREE.MeshBasicMaterial({
           map: tex,
@@ -798,14 +1470,14 @@ function syncDiceMeshesFromState() {
         // Orient plane to face normal and keep text upright.
         orientToFace(plane, normal);
 
-        d.group.add(plane);
+        spinDeformGroup.add(plane);
         d.labelPlanes.push(plane);
       }
     } else {
       // Update plane textures if labels changed
       const faceCount = d.faces.length;
       for (let f = 0; f < faceCount; f++) {
-        const text = labels[f] ?? defaultLabel(f);
+        const text = getLabelTextForMeshFace(labels, f);
         const plane = d.labelPlanes[f];
         if (!plane) continue;
         const cur = plane.material?.map;
@@ -833,22 +1505,28 @@ function syncDiceMeshesFromState() {
 function clearWinningEmphasis() {
   const ctx = initThree();
   if (!ctx || !Array.isArray(ctx.dice)) return;
-  for (const d of ctx.dice) {
-    if (Array.isArray(d?.labelPlanes)) {
-      for (const p of d.labelPlanes) {
-        if (!p) continue;
-        p.scale.set(1, 1, 1);
-        const text = p.material?.map?.userData?.text ?? "";
-        if (text) {
-          p.material.map = makeLabelTexture(text, { glow: false });
-          p.material.needsUpdate = true;
-        }
-      }
+  for (let i = 0; i < ctx.dice.length; i++) clearWinningEmphasisForDie(i);
+}
+
+function clearWinningEmphasisForDie(dieIdx) {
+  const ctx = initThree();
+  if (!ctx || !Array.isArray(ctx.dice)) return;
+  const d = ctx.dice[dieIdx];
+  if (!d || !Array.isArray(d.labelPlanes)) return;
+  for (const p of d.labelPlanes) {
+    if (!p) continue;
+    p.scale.set(1, 1, 1);
+    const text = p.material?.map?.userData?.text ?? "";
+    if (text) {
+      p.material.map = makeLabelTexture(text, { glow: false });
+      p.material.needsUpdate = true;
     }
+    p.material.opacity = 1;
+    p.material.transparent = true;
   }
 }
 
-function rollDiceMeshesToResults(results, { animate = true } = {}) {
+function rollDiceMeshesToResults(results, { animate = true, emphasisReset = "all" } = {}) {
   const ctx = initThree();
   if (!ctx) return 0;
   if (!Array.isArray(results) || !results.length) return 0;
@@ -899,31 +1577,69 @@ function rollDiceMeshesToResults(results, { animate = true } = {}) {
       continue;
     }
 
-    const dur = Math.round((1100 + Math.random() * 600) * DIE_ROLL_DURATION_MULT);
+    const prevAnim = ctx.anims.find((a) => a.obj === d.group);
+    ctx.anims = ctx.anims.filter((a) => a.obj !== d.group);
+
+    let dur = Math.round((1100 + Math.random() * 600) * DIE_ROLL_DURATION_MULT);
+    let spins = Math.floor(3 + Math.random() * 4); // 3..6 base
+    let spinVelMul = 1;
+    let spinChainAmp = 1;
+    if (prevAnim) {
+      spins = (prevAnim.spins || 0) + Math.floor(4 + Math.random() * 6);
+      const prevVm = typeof prevAnim.spinVelMul === "number" && prevAnim.spinVelMul > 0 ? prevAnim.spinVelMul : 1;
+      spinVelMul = Math.min(ROLL_CHAIN_VEL_MUL_MAX, prevVm * ROLL_CHAIN_VEL_MUL_STEP);
+      const prevAmp =
+        typeof prevAnim.spinChainAmp === "number" && prevAnim.spinChainAmp > 0 ? prevAnim.spinChainAmp : 1;
+      spinChainAmp = Math.min(ROLL_CHAIN_SPIN_AMP_MAX, prevAmp * (1 + ROLL_CHAIN_SPIN_AMP_STEP));
+      dur = Math.round(dur * 1.08 + (160 + Math.random() * 140));
+      dur = Math.max(480, Math.min(4200, dur));
+    }
+
     maxDur = Math.max(maxDur, dur);
-    const axis = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
-    const spins = Math.floor(3 + Math.random() * 4); // 3..6
+    let axis;
+    if (prevAnim && prevAnim.axis) {
+      axis = prevAnim.axis.clone();
+      const jit = 0.14;
+      axis.x += (Math.random() - 0.5) * jit;
+      axis.y += (Math.random() - 0.5) * jit;
+      axis.z += (Math.random() - 0.5) * jit;
+      axis.normalize();
+    } else {
+      axis = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+    }
     ctx.anims.push({
       obj: d.group,
+      dieIdx,
       q0: d.group.quaternion.clone(),
       q1: qTarget,
       axis,
       spins,
+      spinVelMul,
+      spinChainAmp,
       t0: performance.now(),
       dur,
     });
   }
 
-  if (!animate) setWinningEmphasis(results);
+  if (!animate) setWinningEmphasis(results, { resetDice: emphasisReset });
   return maxDur;
 }
 
-function setWinningEmphasis(results) {
+function setWinningEmphasis(results, { resetDice = "all" } = {}) {
   const ctx = initThree();
   if (!ctx) return;
   const res = Array.isArray(results) ? results : [];
 
-  clearWinningEmphasis();
+  if (resetDice === "all") clearWinningEmphasis();
+  else if (resetDice === "partial") {
+    const seen = new Set();
+    for (const r of res) {
+      const di = r.die ?? 0;
+      if (seen.has(di)) continue;
+      seen.add(di);
+      clearWinningEmphasisForDie(di);
+    }
+  }
 
   for (const r of res) {
     const dieIdx = r.die ?? 0;
@@ -956,19 +1672,24 @@ function renderDiceFromLast({ animate = false } = {}) {
 
   const results = state.dice.map((die, dieIdx) => {
     const labels = Array.isArray(die.labels) ? die.labels : [];
-    const text = typeof die.lastText === "string" && die.lastText ? die.lastText : (labels[0] ?? defaultLabel(0));
-    const sides = getSidesForDieLabels(labels);
-    const n = Math.max(1, Math.min(labels.length || 1, sides));
+    const active = getActiveFaceSlots(labels);
+    const defaultTop = getLabelTextForMeshFace(labels, 0);
+    const text = typeof die.lastText === "string" && die.lastText ? die.lastText : defaultTop;
+
+    const polySides = getSidesForDieLabels(labels);
+    const k =
+      active.length === 0 ? polySides : Math.min(active.length, getSidesForDieCount(active.length));
+
     let face = die.lastFace;
 
-    if (!Number.isFinite(face) || face < 1 || face > n) {
-      const idx = labels.findIndex((l) => l === text);
+    if (!Number.isFinite(face) || face < 1 || face > k) {
+      const idx = active.findIndex((e) => e.text === text);
       if (idx >= 0) {
-        face = Math.min(n, idx + 1);
+        face = Math.min(k, idx + 1);
       } else {
         let hash = 0;
         for (let i = 0; i < text.length; i++) hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
-        face = (hash % n) + 1;
+        face = (hash % k) + 1;
       }
     }
 
@@ -998,7 +1719,7 @@ function syncMobileTapHint() {
     el.textContent = "Tap to Roll!";
     return;
   }
-  el.textContent = isRolling ? "Rolling…" : "Tap to Roll!";
+  el.textContent = anyDiceRollingVisual() ? "Rolling…" : "Tap to Roll!";
 }
 
 const MOBILE_MQ = window.matchMedia("(max-width: 900px)");
@@ -1093,20 +1814,141 @@ function setTrackingMode(mode) {
   if (isRender) renderDiceFromLast({ animate: false });
 }
 
-let isRolling = false;
-let rollToken = 0;
-let rollTimeoutId = 0;
+/** Bumped whenever all in-flight rolls should abort (full-table roll, reset, etc.). */
+let rollWaveId = 0;
+/** Pending completion timeouts keyed by die index (single-die rolls). */
+const timeoutByDie = new Map();
+const pendingRollTimeouts = new Set();
+let batchRollTimeoutId = 0;
+/** Supersedes older per-die completion handlers when the same die is rolled again. */
+const dieRollEpoch = new Map();
+
+function stopAllAnimationsAndTimers() {
+  cancelPendingRollTimersOnly();
+  if (threeCtx?.anims) threeCtx.anims = [];
+}
+
+/** Cancel scheduled roll completions without stopping active spin animations (stack / chain rolls). */
+function cancelPendingRollTimersOnly() {
+  rollWaveId++;
+  pendingRollTimeouts.forEach((id) => window.clearTimeout(id));
+  pendingRollTimeouts.clear();
+  timeoutByDie.clear();
+  if (batchRollTimeoutId) {
+    window.clearTimeout(batchRollTimeoutId);
+    batchRollTimeoutId = 0;
+  }
+}
+
+/** Invalidate pending onRollDone for this die only (does not remove in-flight spin animation). */
+function cancelDieRollFinishTimer(dieIdx) {
+  const tid = timeoutByDie.get(dieIdx);
+  if (tid != null) {
+    window.clearTimeout(tid);
+    pendingRollTimeouts.delete(tid);
+    timeoutByDie.delete(dieIdx);
+  }
+  dieRollEpoch.set(dieIdx, (dieRollEpoch.get(dieIdx) || 0) + 1);
+}
+
+function stopAnimationsForDie(dieIdx) {
+  const ctx = threeCtx;
+  if (!ctx?.dice?.[dieIdx]) return;
+  const g = ctx.dice[dieIdx].group;
+  ctx.anims = ctx.anims.filter((a) => a.obj !== g);
+  cancelDieRollFinishTimer(dieIdx);
+  resetDieRollingVisuals(ctx, dieIdx);
+}
+
+function scheduleSingleDieRollFinish(dieIdx, settleMs, onDone) {
+  const waveAtSchedule = rollWaveId;
+  const epochAtSchedule = dieRollEpoch.get(dieIdx) || 0;
+  const tid = window.setTimeout(() => {
+    pendingRollTimeouts.delete(tid);
+    timeoutByDie.delete(dieIdx);
+    if (waveAtSchedule !== rollWaveId) return;
+    if (epochAtSchedule !== (dieRollEpoch.get(dieIdx) || 0)) return;
+    onDone();
+  }, settleMs);
+  pendingRollTimeouts.add(tid);
+  timeoutByDie.set(dieIdx, tid);
+}
+
+function scheduleBatchRollFinish(settleMs, onDone) {
+  const waveAtSchedule = rollWaveId;
+  if (batchRollTimeoutId) {
+    window.clearTimeout(batchRollTimeoutId);
+    batchRollTimeoutId = 0;
+  }
+  batchRollTimeoutId = window.setTimeout(() => {
+    batchRollTimeoutId = 0;
+    if (waveAtSchedule !== rollWaveId) return;
+    onDone();
+  }, settleMs);
+}
+
+function anyDiceRollingVisual() {
+  return (
+    (threeCtx?.anims?.length ?? 0) > 0 || timeoutByDie.size > 0 || !!batchRollTimeoutId
+  );
+}
 
 function cancelInFlightRoll() {
-  rollToken++;
-  if (rollTimeoutId) {
-    window.clearTimeout(rollTimeoutId);
-    rollTimeoutId = 0;
+  stopAllAnimationsAndTimers();
+  dieRollEpoch.clear();
+  const ctx0 = initThree();
+  if (ctx0?.dice) {
+    for (let i = 0; i < ctx0.dice.length; i++) resetDieRollingVisuals(ctx0, i);
   }
-  if (threeCtx?.anims) threeCtx.anims = [];
-  isRolling = false;
   setRollButtonsDisabled(false);
+  syncMobileTapHint();
   clearWinningEmphasis();
+}
+
+function renderPerDieRollButtons() {
+  ensureDiceArray();
+  const statsEl = $("perDieRollStats");
+  const renderEl = $("perDieRollRender");
+  const containers = [statsEl, renderEl].filter(Boolean);
+  const n = state.dice.length;
+
+  for (const el of containers) {
+    el.className = "per-die-actions-wrap";
+    el.innerHTML = "";
+    el.hidden = false;
+
+    const grid = document.createElement("div");
+    grid.className = "per-die-actions-grid";
+    grid.style.setProperty("--per-die-cols", String(Math.max(1, n)));
+
+    for (let i = 0; i < n; i++) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `btn-small die-per-action die-per-action-roll die-color-${i % 8}`;
+      btn.dataset.perDieRoll = String(i);
+      btn.textContent = "Roll";
+      btn.title = `Roll only ${dieName(i)}`;
+      btn.addEventListener("click", () => rollSingleDieWithAnimation(i));
+      grid.appendChild(btn);
+    }
+
+    for (let i = 0; i < n; i++) {
+      const die = state.dice[i];
+      const canRemove =
+        Number.isFinite(die?.lastFace) && die.lastFace >= 1 && !!state.history.length;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `btn-small die-per-action die-per-action-remove die-color-${i % 8}`;
+      btn.dataset.perDieDisable = String(i);
+      btn.textContent = "Remove Choice";
+      btn.title = `Prefix "-" on ${dieName(i)}'s current top face`;
+      btn.disabled = !canRemove;
+      btn.addEventListener("click", () => disableLastRolledFaceForDieAndSave(i));
+      grid.appendChild(btn);
+    }
+
+    el.appendChild(grid);
+  }
 }
 
 function setRollButtonsDisabled(disabled) {
@@ -1114,6 +1956,12 @@ function setRollButtonsDisabled(disabled) {
   const rollRenderBtn = $("rollBtnRender");
   if (rollStatsBtn) rollStatsBtn.disabled = !!disabled;
   if (rollRenderBtn) rollRenderBtn.disabled = !!disabled;
+  document.querySelectorAll("[data-per-die-roll]").forEach((btn) => {
+    btn.disabled = !!disabled;
+  });
+  document.querySelectorAll("[data-per-die-disable]").forEach((btn) => {
+    btn.disabled = !!disabled;
+  });
 }
 
 function rollOnce() {
@@ -1121,16 +1969,12 @@ function rollOnce() {
   const ts = Date.now();
 
   const results = state.dice.map((die, dieIdx) => {
-    const sides = getSidesForDieLabels(die.labels);
-    const n = Math.max(1, Math.min(die.labels.length || 1, sides));
-    const face = Math.floor(Math.random() * n) + 1;
-    const idx = face - 1;
-    const text = die.labels[idx] ?? `Side ${face}`;
-    while ((die.counts?.length ?? 0) < n) die.counts.push(0);
-    die.counts[idx] = (die.counts[idx] ?? 0) + 1;
-    die.lastFace = face;
-    die.lastText = text;
-    return { die: dieIdx, face, text };
+    const out = pickRandomRollOutcome(die.labels);
+    while ((die.counts?.length ?? 0) < die.labels.length) die.counts.push(0);
+    if (out.origIdx != null) die.counts[out.origIdx] = (die.counts[out.origIdx] ?? 0) + 1;
+    die.lastFace = out.face;
+    die.lastText = out.text;
+    return { die: dieIdx, face: out.face, text: out.text };
   });
 
   state.history.push({ ts, results });
@@ -1142,13 +1986,88 @@ function rollOnce() {
   renderHistory();
   if (isDieRollView()) {
     syncDiceMeshesFromState();
-    rollDiceMeshesToResults(results, { animate: false });
-    setWinningEmphasis(results);
+    rollDiceMeshesToResults(results, { animate: false, emphasisReset: "all" });
   }
 }
 
+function rollSingleDieOnce(dieIdx) {
+  ensureDiceArray();
+  const die = state.dice[dieIdx];
+  if (!die) return;
+
+  const ts = Date.now();
+  const out = pickRandomRollOutcome(die.labels);
+  while ((die.counts?.length ?? 0) < die.labels.length) die.counts.push(0);
+  if (out.origIdx != null) die.counts[out.origIdx] = (die.counts[out.origIdx] ?? 0) + 1;
+  die.lastFace = out.face;
+  die.lastText = out.text;
+
+  const results = [{ die: dieIdx, face: out.face, text: out.text }];
+  state.history.push({ ts, results });
+  if (state.history.length > state.maxHistory) state.history = state.history.slice(-state.maxHistory);
+
+  saveState();
+  renderResult(results);
+  renderCounts();
+  renderHistory();
+  if (isDieRollView()) {
+    syncDiceMeshesFromState();
+    rollDiceMeshesToResults(results, { animate: false, emphasisReset: "partial" });
+  }
+}
+
+function rollSingleDieWithAnimation(dieIdx) {
+  ensureDiceArray();
+  const die = state.dice[dieIdx];
+  if (!die) return;
+
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  if (reduceMotion || !isDieRollView()) {
+    rollSingleDieOnce(dieIdx);
+    syncMobileTapHint();
+    return;
+  }
+
+  if (batchRollTimeoutId) {
+    cancelPendingRollTimersOnly();
+  }
+
+  syncDiceMeshesFromState();
+  cancelDieRollFinishTimer(dieIdx);
+  clearWinningEmphasisForDie(dieIdx);
+
+  const out = pickRandomRollOutcome(die.labels);
+  const face = out.face;
+  const text = out.text;
+
+  syncMobileTapHint();
+
+  const maxDuration = rollDiceMeshesToResults([{ die: dieIdx, face, text }], { animate: true });
+  const settleMs = Math.max(0, Number(maxDuration) || 0) + 30;
+
+  scheduleSingleDieRollFinish(dieIdx, settleMs, () => {
+    const ts = Date.now();
+    if (out.origIdx != null) {
+      while (die.counts.length <= out.origIdx) die.counts.push(0);
+      die.counts[out.origIdx] = (die.counts[out.origIdx] ?? 0) + 1;
+    }
+    die.lastFace = face;
+    die.lastText = text;
+    const finalResults = [{ die: dieIdx, face, text }];
+    state.history.push({ ts, results: finalResults });
+    if (state.history.length > state.maxHistory) state.history = state.history.slice(-state.maxHistory);
+    saveState();
+
+    renderResult(finalResults);
+    renderCounts();
+    renderHistory();
+    setWinningEmphasis(finalResults, { resetDice: "none" });
+
+    syncMobileTapHint();
+  });
+}
+
 function rollWithAnimation() {
-  if (isRolling) return;
   const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
   if (reduceMotion || !isDieRollView()) {
     rollOnce();
@@ -1157,22 +2076,19 @@ function rollWithAnimation() {
   }
 
   ensureDiceArray();
+  cancelPendingRollTimersOnly();
   syncDiceMeshesFromState();
   clearWinningEmphasis();
 
   // Pick final outcomes first; animations run in parallel.
-  const results = state.dice.map((die, dieIdx) => {
-    const sides = getSidesForDieLabels(die.labels);
-    const n = Math.max(1, Math.min(die.labels.length || 1, sides));
-    const face = Math.floor(Math.random() * n) + 1;
-    const idx = face - 1;
-    const text = die.labels[idx] ?? `Side ${face}`;
-    return { die: dieIdx, face, idx, text };
-  });
+  const picked = state.dice.map((die) => pickRandomRollOutcome(die.labels));
+  const results = picked.map((out, dieIdx) => ({
+    die: dieIdx,
+    face: out.face,
+    origIdx: out.origIdx,
+    text: out.text,
+  }));
 
-  isRolling = true;
-  const myToken = ++rollToken;
-  setRollButtonsDisabled(true);
   syncMobileTapHint();
 
   $("resultWrap").textContent = "Rolling…";
@@ -1184,14 +2100,14 @@ function rollWithAnimation() {
   );
   const settleMs = Math.max(0, Number(maxDuration) || 0) + 30;
 
-  rollTimeoutId = window.setTimeout(() => {
-    if (myToken !== rollToken) return; // cancelled/replaced
+  scheduleBatchRollFinish(settleMs, () => {
     const ts = Date.now();
     const finalResults = results.map((r) => {
-      const die = state.dice[r.die];
-      die.counts[r.idx] = (die.counts[r.idx] ?? 0) + 1;
-      die.lastFace = r.face;
-      die.lastText = r.text;
+      const die0 = state.dice[r.die];
+      while ((die0.counts?.length ?? 0) < die0.labels.length) die0.counts.push(0);
+      if (r.origIdx != null) die0.counts[r.origIdx] = (die0.counts[r.origIdx] ?? 0) + 1;
+      die0.lastFace = r.face;
+      die0.lastText = r.text;
       return { die: r.die, face: r.face, text: r.text };
     });
     state.history.push({ ts, results: finalResults });
@@ -1201,13 +2117,10 @@ function rollWithAnimation() {
     renderResult(finalResults);
     renderCounts();
     renderHistory();
-    setWinningEmphasis(finalResults);
+    setWinningEmphasis(finalResults, { resetDice: "all" });
 
-    setRollButtonsDisabled(false);
-    isRolling = false;
     syncMobileTapHint();
-    rollTimeoutId = 0;
-  }, settleMs);
+  });
 }
 
 function resetRolls() {
@@ -1232,6 +2145,7 @@ function resetHistory() {
   });
   saveState();
   renderHistory();
+  renderCounts();
   if (isDieRollView()) renderDiceFromLast();
 }
 
@@ -1269,6 +2183,7 @@ function init() {
     setTrackingMode(trackingMode);
   }
   syncMobileTapHint();
+  syncMobileRemoveSidesBtn();
 
   MOBILE_MQ.addEventListener("change", () => {
     if (isMobileLayout()) {
@@ -1290,6 +2205,15 @@ function init() {
   $("resetHistoryBtn").addEventListener("click", resetHistory);
   const resetSidesBtn = $("resetSidesBtn");
   if (resetSidesBtn) resetSidesBtn.addEventListener("click", resetSidesToDefault);
+  const reenableSidesBtn = $("reenableSidesBtn");
+  if (reenableSidesBtn) reenableSidesBtn.addEventListener("click", reenableAllMarkedSides);
+  const mobileRemoveSidesBtn = $("mobileRemoveSidesBtn");
+  if (mobileRemoveSidesBtn) {
+    mobileRemoveSidesBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      disableLastRolledFacesAllDice();
+    });
+  }
 
   queryToggleButtons().forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1307,8 +2231,10 @@ function init() {
   const rollCard = document.querySelector(".roll-card");
   rollCard?.addEventListener("click", (e) => {
     if (!isMobileLayout() || !document.body.classList.contains("mobile-roll-view")) return;
-    if (isRolling) return;
     if (e.target.closest("[data-toggle-panel]")) return;
+    if (e.target.closest("[data-per-die-roll]")) return;
+    if (e.target.closest("[data-per-die-disable]")) return;
+    if (e.target.closest("#mobileRemoveSidesBtn")) return;
     rollWithAnimation();
   });
 }
