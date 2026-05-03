@@ -523,6 +523,11 @@ body {
     padding-bottom: 2px;
   }
 
+  /* Canvas owns tap / swipe ↑ roll and swipe ← ignore without browser scroll stealing vertical gestures. */
+  body.mobile-roll-view #threeRoot canvas {
+    touch-action: none;
+  }
+
   .stats-desktop-only {
     display: none !important;
   }

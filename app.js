@@ -461,10 +461,23 @@ function renderResult(results) {
   }
 }
 
-// --- Three.js polyhedral renderer (D3 triple-cylinder + D4/D6/D8/D10/D12/D20) ---
+// --- Three.js polyhedral renderer (D4/D6/D8/D10/D12/D20) ---
 let threeCtx = null;
 
-const SUPPORTED_DICE_SIDES = [3, 4, 6, 8, 10, 12, 20];
+/** Mobile roll view: skip bubbling roll-card tap after the canvas handled roll / ignore gesture. */
+let suppressMobileRollCardTap = false;
+
+const MOBILE_SWIPE_IGNORE_LAST_SIDE_MIN_PX = 52;
+const MOBILE_SWIPE_IGNORE_DOMINANCE_RATIO = 1.15;
+/** Tap vs drag: movement within this box counts as tap (die roll target from pointer-down pick). */
+const DIE_CANVAS_TAP_MAX_PX = 26;
+const DIE_CANVAS_SWIPE_UP_MIN_PX = 52;
+const DIE_CANVAS_SWIPE_UP_DOMINANCE_RATIO = 1.15;
+
+const _diePickNdca = new THREE.Vector2();
+const _diePickRaycaster = new THREE.Raycaster();
+
+const SUPPORTED_DICE_SIDES = [2, 4, 6, 8, 10, 12, 20];
 const DIE_COLORS = [
   0xe14b4b, // red
   0x4b86ff, // blue
@@ -732,194 +745,29 @@ function createPentagonalTrapezohedronGeometry() {
   return geometry;
 }
 
-/**
- * D3 solid = intersection of three perpendicular unit cylinders
- *   x²+y²≤1, x²+z²≤1, y²+z²≤1  (“S-type” / three quarter-pipes through a cube).
- *
- * Mesh is NOT a radial warp of a sphere/cube (that inherits 6/8-way symmetry and looks “faceted”).
- * We tessellate the **true outer boundary** as three trimmed cylindrical mantles:
- *   • z-axis sheet: (cos θ, sin θ, z) with |z| ≤ min(|sin θ|, |cos θ|)
- *   • x-axis sheet: (x, cos θ, sin θ) with |x| ≤ min(|sin θ|, |cos θ|)
- *   • y-axis sheet: (cos θ, y, sin θ) with |y| ≤ min(|sin θ|, |cos θ|)
- * θ ∈ [0, 2π). ~3 × 2 × nu × (nv−1) triangles.
- */
-const D3_CYL_BAND_NU = 48;
-const D3_CYL_BAND_NV = 34;
-
-/** Outward normal on ∂{max(f1,f2,f3)≤0}; blend gradients where multiple constraints are active. */
-function tripleCylinderAnalyticalNormal(p, target) {
-  const x = p.x;
-  const y = p.y;
-  const z = p.z;
-  const f1 = x * x + y * y - 1;
-  const f2 = x * x + z * z - 1;
-  const f3 = y * y + z * z - 1;
-  const eps = 0.055;
-  target.set(0, 0, 0);
-  if (f1 > -eps) target.add(new THREE.Vector3(2 * x, 2 * y, 0));
-  if (f2 > -eps) target.add(new THREE.Vector3(2 * x, 0, 2 * z));
-  if (f3 > -eps) target.add(new THREE.Vector3(0, 2 * y, 2 * z));
-  if (target.lengthSq() < 1e-12) {
-    const r = x * x + y * y + z * z;
-    if (r > 1e-12) target.set(x, y, z).multiplyScalar(1 / Math.sqrt(r));
-    else target.set(0, 0, 1);
-  } else target.normalize();
-  return target;
-}
-
-function applyTripleCylinderAnalyticalNormals(geometry) {
-  const pos = geometry.attributes.position;
-  const nor = geometry.attributes.normal;
-  if (!nor || pos.count !== nor.count) {
-    geometry.computeVertexNormals();
-    return;
-  }
-  const p = new THREE.Vector3();
-  const n = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    p.fromBufferAttribute(pos, i);
-    tripleCylinderAnalyticalNormal(p, n);
-    nor.setXYZ(i, n.x, n.y, n.z);
-  }
-  nor.needsUpdate = true;
-}
-
-function d3CylinderTrimLimit(theta) {
-  return Math.min(Math.abs(Math.sin(theta)), Math.abs(Math.cos(theta)));
-}
-
-function createTripleCylinderIntersectionGeometry() {
-  const positions = [];
-  const indices = [];
-  const nu = D3_CYL_BAND_NU;
-  const nv = D3_CYL_BAND_NV;
-
-  function appendCylinderBand(axisMode) {
-    const base = (positions.length / 3) | 0;
-    for (let i = 0; i < nu; i++) {
-      const theta = (i / nu) * Math.PI * 2;
-      const c = Math.cos(theta);
-      const s = Math.sin(theta);
-      const lim = d3CylinderTrimLimit(theta);
-      for (let j = 0; j < nv; j++) {
-        const tv = nv <= 1 ? 0 : j / (nv - 1);
-        const al = (tv * 2 - 1) * lim;
-        let x;
-        let y;
-        let z;
-        if (axisMode === 0) {
-          x = c;
-          y = s;
-          z = al;
-        } else if (axisMode === 1) {
-          x = al;
-          y = c;
-          z = s;
-        } else {
-          x = c;
-          y = al;
-          z = s;
-        }
-        positions.push(x, y, z);
-      }
-    }
-    for (let i = 0; i < nu; i++) {
-      const i2 = (i + 1) % nu;
-      for (let j = 0; j < nv - 1; j++) {
-        const a = base + i * nv + j;
-        const b = base + i * nv + (j + 1);
-        const c0 = base + i2 * nv + j;
-        const d = base + i2 * nv + (j + 1);
-        indices.push(a, c0, b, b, c0, d);
-      }
-    }
-  }
-
-  appendCylinderBand(0);
-  appendCylinderBand(1);
-  appendCylinderBand(2);
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
-  geo.setIndex(indices);
-
-  const pa = geo.attributes.position;
-  geo.computeBoundingBox();
-  const cx = new THREE.Vector3();
-  geo.boundingBox.getCenter(cx);
-  for (let i = 0; i < pa.count; i++) {
-    pa.setXYZ(i, pa.getX(i) - cx.x, pa.getY(i) - cx.y, pa.getZ(i) - cx.z);
-  }
-  pa.needsUpdate = true;
-
+/** Thin cylinder (axis +Y); caps used as the two outcomes for clustering / labels. */
+function createCoinGeometry() {
+  const geo = new THREE.CylinderGeometry(1, 1, 0.15, 64, 1, false);
   geo.computeVertexNormals();
-  applyTripleCylinderAnalyticalNormals(geo);
   return geo;
 }
 
-let _d3TripleCylinderTemplate = null;
-function cloneTripleCylinderGeometry() {
-  if (!_d3TripleCylinderTemplate) _d3TripleCylinderTemplate = createTripleCylinderIntersectionGeometry();
-  return _d3TripleCylinderTemplate.clone();
-}
-
-function d3CylinderBindingIndex(cx, cy, cz) {
-  const sxy = 1 - cx * cx - cy * cy;
-  const sxz = 1 - cx * cx - cz * cz;
-  const syz = 1 - cy * cy - cz * cz;
-  let b = 0;
-  let best = sxy;
-  if (sxz < best) {
-    best = sxz;
-    b = 1;
-  }
-  if (syz < best) b = 2;
-  return b;
-}
-
-/** Three curved “faces” = which cylinder constraint is tightest at each triangle. */
-function computeTripleCylinderFaceFeatures(geometry) {
-  const g = geometry.toNonIndexed();
-  const pos = g.getAttribute("position");
-  const k = 3;
-  const centerSums = Array.from({ length: k }, () => new THREE.Vector3());
-  const normalSums = Array.from({ length: k }, () => new THREE.Vector3());
-  const counts = Array(k).fill(0);
-  const a = new THREE.Vector3();
-  const b = new THREE.Vector3();
-  const c = new THREE.Vector3();
-  const ctr = new THREE.Vector3();
-  const nrm = new THREE.Vector3();
-
-  for (let i = 0; i < pos.count; i += 3) {
-    a.fromBufferAttribute(pos, i);
-    b.fromBufferAttribute(pos, i + 1);
-    c.fromBufferAttribute(pos, i + 2);
-    ctr.copy(a).add(b).add(c).multiplyScalar(1 / 3);
-    const bi = d3CylinderBindingIndex(ctr.x, ctr.y, ctr.z);
-    tripleCylinderAnalyticalNormal(ctr, nrm);
-    centerSums[bi].add(ctr);
-    normalSums[bi].add(nrm);
-    counts[bi]++;
-  }
-
-  const out = [];
-  for (let L = 0; L < k; L++) {
-    const ns = normalSums[L];
-    const normal = ns.lengthSq() > 1e-10 ? ns.clone().normalize() : new THREE.Vector3(0, 0, 1);
-    const center = centerSums[L].clone().multiplyScalar(1 / Math.max(1, counts[L]));
-    out.push({ normal, center });
-  }
-
-  out.sort((p, q) => (p.normal.z - q.normal.z) || (p.normal.y - q.normal.y) || (p.normal.x - q.normal.x));
-  return out;
+/** Two logical faces (+Y cap / −Y cap) for physics & labels without merging the rim band. */
+function computeCoinCapsFeatures(geometry) {
+  geometry.computeBoundingBox();
+  const bb = geometry.boundingBox;
+  const inset = Math.max((bb.max.y - bb.min.y) * 0.06, 0.004);
+  return [
+    { normal: new THREE.Vector3(0, 1, 0), center: new THREE.Vector3(0, bb.max.y - inset, 0) },
+    { normal: new THREE.Vector3(0, -1, 0), center: new THREE.Vector3(0, bb.min.y + inset, 0) },
+  ];
 }
 
 function getGeometryForSides(n) {
-  // Return { geometry, faceCount, faceLayout } — "lobes" = D3 triple-cylinder intersection mesh; "clusters" = planar face merging.
+  // Return { geometry, faceCount, faceLayout }; clusters except coin caps are analytic.
   switch (n) {
-    case 3:
-      return { geometry: cloneTripleCylinderGeometry(), faceCount: 3, faceLayout: "lobes" };
+    case 2:
+      return { geometry: createCoinGeometry(), faceCount: 2, faceLayout: "coin" };
     case 4:
       return { geometry: new THREE.TetrahedronGeometry(1, 0), faceCount: 4, faceLayout: "clusters" };
     case 6:
@@ -953,7 +801,7 @@ function getActiveFaceSlots(labels) {
 
 /**
  * Polyhedron size from number of **eligible** sides (ignored "-" lines do not count).
- * Same ladder as before: largest standard die whose face count fits.
+ * 1–2 → coin (2 faces); 3 → D4; then standard ladder.
  */
 function getSidesForDieCount(m) {
   const n = Math.max(0, m | 0);
@@ -963,8 +811,8 @@ function getSidesForDieCount(m) {
   if (n >= 8) return 8;
   if (n >= 6) return 6;
   if (n >= 4) return 4;
-  if (n >= 3) return 3;
-  return 6;
+  if (n >= 3) return 4;
+  return 2;
 }
 
 function getSidesForDieLabels(labels) {
@@ -985,6 +833,7 @@ function getLabelTextForMeshFace(labels, faceIdx0) {
   if (active.length === 0) return defaultLabel(faceIdx0);
   const polySides = getSidesForDieCount(active.length);
   const k = Math.min(active.length, polySides);
+  if (polySides === 2 && active.length === 1) return active[0].text;
   if (faceIdx0 < k) return active[faceIdx0].text;
   return defaultLabel(faceIdx0);
 }
@@ -996,6 +845,7 @@ function meshFaceToOrigIdx(labels, face1Based) {
   const f = face1Based - 1;
   const polySides = getSidesForDieCount(active.length);
   const k = Math.min(active.length, polySides);
+  if (polySides === 2 && active.length === 1 && f >= 0 && f < 2) return active[0].origIdx;
   if (f < 0 || f >= k) return null;
   return active[f].origIdx;
 }
@@ -1017,8 +867,10 @@ function pickRandomRollOutcome(labels) {
   const k = Math.min(m, polySides);
   const slot = Math.floor(Math.random() * k);
   const entry = active[slot];
+  let face1Based = slot + 1;
+  if (polySides === 2 && m === 1) face1Based = Math.floor(Math.random() * 2) + 1;
   return {
-    face: slot + 1,
+    face: face1Based,
     origIdx: entry.origIdx,
     text: entry.text,
     slot,
@@ -1051,19 +903,21 @@ function commitSideLabelChanges({ clearRollMeta = false } = {}) {
 }
 
 function disableLastRolledFaceForDieAndSave(dieIdx) {
-  if (!applyDisablePrefixToLastFace(dieIdx)) return;
+  if (!applyDisablePrefixToLastFace(dieIdx)) return false;
   commitSideLabelChanges();
+  return true;
 }
 
 function disableLastRolledFacesAllDice() {
   ensureDiceArray();
-  if (!state.history.length) return;
+  if (!state.history.length) return false;
   let changed = false;
   for (let i = 0; i < state.dice.length; i++) {
     if (applyDisablePrefixToLastFace(i)) changed = true;
   }
-  if (!changed) return;
+  if (!changed) return false;
   commitSideLabelChanges();
+  return true;
 }
 
 function reenableAllMarkedSides() {
@@ -1188,6 +1042,108 @@ function computeFaceClusters(geometry) {
   return out;
 }
 
+/** @returns {number|null} Die index whose mesh was hit, or null for empty canvas / miss. */
+function pickDieIndexUnderPointer(clientX, clientY) {
+  const ctx = threeCtx;
+  if (!ctx?.renderer?.domElement || !ctx.camera || !ctx.dice?.length) return null;
+  const rect = ctx.renderer.domElement.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  _diePickNdca.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  _diePickNdca.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+  _diePickRaycaster.setFromCamera(_diePickNdca, ctx.camera);
+  const roots = ctx.dice.map((d) => d.group).filter(Boolean);
+  if (!roots.length) return null;
+  const hits = _diePickRaycaster.intersectObjects(roots, true);
+  if (!hits.length) return null;
+  let o = hits[0].object;
+  while (o) {
+    const idx = ctx.dice.findIndex((d) => d.group === o);
+    if (idx >= 0) return idx;
+    o = o.parent;
+  }
+  return null;
+}
+
+function triggerRollFromCanvasPick(dieIdxOrNull) {
+  ensureDiceArray();
+  if (dieIdxOrNull != null && state.dice[dieIdxOrNull]) rollSingleDieWithAnimation(dieIdxOrNull);
+  else rollWithAnimation();
+}
+
+function bindDieCanvasGestures(canvas) {
+  if (!canvas || canvas.dataset.dieCanvasGesturesBound === "1") return;
+  canvas.dataset.dieCanvasGesturesBound = "1";
+
+  let activePointerId = null;
+  let sx = 0;
+  let sy = 0;
+  let dieIdxAtDown = null;
+
+  const suppressRollCardIfMobile = () => {
+    if (isMobileLayout()) suppressMobileRollCardTap = true;
+  };
+
+  canvas.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (!isDieRollView()) return;
+      if (e.button !== 0 && e.pointerType !== "touch" && e.pointerType !== "pen") return;
+      activePointerId = e.pointerId;
+      sx = e.clientX;
+      sy = e.clientY;
+      dieIdxAtDown = pickDieIndexUnderPointer(e.clientX, e.clientY);
+    },
+    { passive: true }
+  );
+
+  canvas.addEventListener(
+    "pointerup",
+    (e) => {
+      if (e.pointerId !== activePointerId) return;
+      activePointerId = null;
+      if (!isDieRollView()) return;
+
+      const dx = e.clientX - sx;
+      const dy = e.clientY - sy;
+      const adx = Math.abs(dx);
+      const ady = Math.abs(dy);
+
+      // 1) Mobile: swipe left — ignore last side (global vs picked die).
+      if (
+        isMobileLayout() &&
+        dx <= -MOBILE_SWIPE_IGNORE_LAST_SIDE_MIN_PX &&
+        adx >= ady * MOBILE_SWIPE_IGNORE_DOMINANCE_RATIO
+      ) {
+        const ok =
+          dieIdxAtDown != null
+            ? disableLastRolledFaceForDieAndSave(dieIdxAtDown)
+            : disableLastRolledFacesAllDice();
+        if (ok) suppressRollCardIfMobile();
+        return;
+      }
+
+      // 2) Swipe up — roll picked die only if pointer-down hit that die; else roll all dice.
+      if (dy <= -DIE_CANVAS_SWIPE_UP_MIN_PX && ady >= adx * DIE_CANVAS_SWIPE_UP_DOMINANCE_RATIO) {
+        triggerRollFromCanvasPick(dieIdxAtDown);
+        suppressRollCardIfMobile();
+        return;
+      }
+
+      // 3) Tap — same targeting rule as swipe up.
+      if (adx <= DIE_CANVAS_TAP_MAX_PX && ady <= DIE_CANVAS_TAP_MAX_PX) {
+        triggerRollFromCanvasPick(dieIdxAtDown);
+        suppressRollCardIfMobile();
+        return;
+      }
+    },
+    { passive: true }
+  );
+
+  canvas.addEventListener("pointercancel", () => {
+    activePointerId = null;
+  });
+}
+
 function initThree() {
   const root = document.getElementById("threeRoot");
   if (!root) return null;
@@ -1206,6 +1162,7 @@ function initThree() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   root.appendChild(renderer.domElement);
+  bindDieCanvasGestures(renderer.domElement);
 
   const scene = new THREE.Scene();
 
@@ -1375,9 +1332,9 @@ function syncDiceMeshesFromState() {
       const dieColorHex = getDieHexColor(i);
       const mat = new THREE.MeshStandardMaterial({
         color: dieColorHex,
-        roughness: sides === 3 ? 0.48 : 0.52,
-        metalness: sides === 3 ? 0.04 : 0.06,
-        flatShading: sides !== 3,
+        roughness: sides === 2 ? 0.38 : 0.52,
+        metalness: sides === 2 ? 0.42 : 0.06,
+        flatShading: sides !== 2,
       });
 
       const mesh = new THREE.Mesh(geometry, mat);
@@ -1394,8 +1351,8 @@ function syncDiceMeshesFromState() {
       const s = desiredRadius / baseRadius;
       d.group.scale.setScalar(s);
 
-      if (faceLayout === "lobes") {
-        d.faces = computeTripleCylinderFaceFeatures(geometry);
+      if (faceLayout === "coin") {
+        d.faces = computeCoinCapsFeatures(geometry);
       } else {
         const clusters = computeFaceClusters(geometry);
         d.faces = clusters.slice(0, faceCount);
@@ -1428,7 +1385,7 @@ function syncDiceMeshesFromState() {
       const labelSizeBySides = (sidesN) => {
         // Base sizes tuned to keep labels inside faces even after scaling.
         // (We apply FACE_TEXT_SCALE below.)
-        if (sidesN === 3) return 0.52; // triple-cylinder intersection patches
+        if (sidesN === 2) return 0.74;
         if (sidesN === 4 || sidesN === 8 || sidesN === 20) return 0.56; // triangles
         if (sidesN === 10) return 0.54; // kite quads (D10)
         if (sidesN === 12) return 0.58; // pentagons
@@ -1719,7 +1676,9 @@ function syncMobileTapHint() {
     el.textContent = "Tap to Roll!";
     return;
   }
-  el.textContent = anyDiceRollingVisual() ? "Rolling…" : "Tap to Roll!";
+  el.textContent = anyDiceRollingVisual()
+    ? "Rolling…"
+    : "Tap or swipe ↑ on a die for that die only · Else all dice · Swipe ← ignores last side";
 }
 
 const MOBILE_MQ = window.matchMedia("(max-width: 900px)");
@@ -2231,6 +2190,10 @@ function init() {
   const rollCard = document.querySelector(".roll-card");
   rollCard?.addEventListener("click", (e) => {
     if (!isMobileLayout() || !document.body.classList.contains("mobile-roll-view")) return;
+    if (suppressMobileRollCardTap) {
+      suppressMobileRollCardTap = false;
+      return;
+    }
     if (e.target.closest("[data-toggle-panel]")) return;
     if (e.target.closest("[data-per-die-roll]")) return;
     if (e.target.closest("[data-per-die-disable]")) return;
