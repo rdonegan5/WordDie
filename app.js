@@ -1087,7 +1087,11 @@ function bindDieCanvasGestures(canvas) {
     "pointerdown",
     (e) => {
       if (!isDieRollView()) return;
-      if (e.button !== 0 && e.pointerType !== "touch" && e.pointerType !== "pen") return;
+      if (isMobileLayout()) {
+        if (e.button !== 0 && e.pointerType !== "touch" && e.pointerType !== "pen") return;
+      } else if (e.pointerType === "mouse" && e.button !== 0) {
+        return;
+      }
       activePointerId = e.pointerId;
       sx = e.clientX;
       sy = e.clientY;
@@ -1108,32 +1112,38 @@ function bindDieCanvasGestures(canvas) {
       const adx = Math.abs(dx);
       const ady = Math.abs(dy);
 
-      // 1) Mobile: swipe left — ignore last side (global vs picked die).
-      if (
-        isMobileLayout() &&
-        dx <= -MOBILE_SWIPE_IGNORE_LAST_SIDE_MIN_PX &&
-        adx >= ady * MOBILE_SWIPE_IGNORE_DOMINANCE_RATIO
-      ) {
-        const ok =
-          dieIdxAtDown != null
-            ? disableLastRolledFaceForDieAndSave(dieIdxAtDown)
-            : disableLastRolledFacesAllDice();
-        if (ok) suppressRollCardIfMobile();
+      if (isMobileLayout()) {
+        // 1) Swipe left — ignore last side (global vs picked die).
+        if (
+          dx <= -MOBILE_SWIPE_IGNORE_LAST_SIDE_MIN_PX &&
+          adx >= ady * MOBILE_SWIPE_IGNORE_DOMINANCE_RATIO
+        ) {
+          const ok =
+            dieIdxAtDown != null
+              ? disableLastRolledFaceForDieAndSave(dieIdxAtDown)
+              : disableLastRolledFacesAllDice();
+          if (ok) suppressRollCardIfMobile();
+          return;
+        }
+
+        // 2) Swipe up — roll global vs picked die.
+        if (dy <= -DIE_CANVAS_SWIPE_UP_MIN_PX && ady >= adx * DIE_CANVAS_SWIPE_UP_DOMINANCE_RATIO) {
+          triggerRollFromCanvasPick(dieIdxAtDown);
+          suppressRollCardIfMobile();
+          return;
+        }
+
+        // 3) Tap — same targeting as swipe up.
+        if (adx <= DIE_CANVAS_TAP_MAX_PX && ady <= DIE_CANVAS_TAP_MAX_PX) {
+          triggerRollFromCanvasPick(dieIdxAtDown);
+          suppressRollCardIfMobile();
+        }
         return;
       }
 
-      // 2) Swipe up — roll picked die only if pointer-down hit that die; else roll all dice.
-      if (dy <= -DIE_CANVAS_SWIPE_UP_MIN_PX && ady >= adx * DIE_CANVAS_SWIPE_UP_DOMINANCE_RATIO) {
-        triggerRollFromCanvasPick(dieIdxAtDown);
-        suppressRollCardIfMobile();
-        return;
-      }
-
-      // 3) Tap — same targeting rule as swipe up.
-      if (adx <= DIE_CANVAS_TAP_MAX_PX && ady <= DIE_CANVAS_TAP_MAX_PX) {
-        triggerRollFromCanvasPick(dieIdxAtDown);
-        suppressRollCardIfMobile();
-        return;
+      // Desktop: tap a die only (no canvas swipe actions; no global roll from empty canvas).
+      if (adx <= DIE_CANVAS_TAP_MAX_PX && ady <= DIE_CANVAS_TAP_MAX_PX && dieIdxAtDown != null) {
+        rollSingleDieWithAnimation(dieIdxAtDown);
       }
     },
     { passive: true }
