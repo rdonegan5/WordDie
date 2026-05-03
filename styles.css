@@ -276,8 +276,24 @@ body {
 }
 
 @media (max-width: 900px) {
+  /* Lock document to one screen; inner regions must flex instead of growing the page */
+  html {
+    min-height: 100svh;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
   body {
     padding: 12px;
+    min-height: 0;
+    max-height: 100svh;
+    overscroll-behavior: none;
+  }
+
+  @supports (height: 100dvh) {
+    body {
+      max-height: 100dvh;
+    }
   }
 
   .layout {
@@ -526,6 +542,16 @@ body {
   /* Canvas owns tap / swipe ↑ roll and swipe ← ignore without browser scroll stealing vertical gestures. */
   body.mobile-roll-view #threeRoot canvas {
     touch-action: none;
+  }
+
+  /* No nested scroll on the die strip — canvas shrinks via layoutThreeCanvas (app.js). */
+  body.mobile-roll-view #renderPanel {
+    overflow: hidden !important;
+  }
+
+  body.mobile-roll-view .dice-scroll {
+    overflow: hidden !important;
+    -webkit-overflow-scrolling: auto;
   }
 
   .stats-desktop-only {

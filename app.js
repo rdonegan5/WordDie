@@ -1277,9 +1277,25 @@ function layoutThreeCanvas(diceCount) {
   else diePx = 180;
 
   const gap = 76; // keep same as CSS gap
-  const cols = Math.max(1, Math.min(diceCount, Math.floor((w + gap) / (diePx + gap))));
-  const rows = Math.max(1, Math.ceil(diceCount / cols));
-  const h = Math.max(1, rows * (diePx + gap) - gap + 40);
+  const padExtra = 40;
+  let cols = Math.max(1, Math.min(diceCount, Math.floor((w + gap) / (diePx + gap))));
+  let rows = Math.max(1, Math.ceil(diceCount / cols));
+  let h = Math.max(1, rows * (diePx + gap) - gap + padExtra);
+
+  /** Mobile: stay within .dice-scroll height so the page never gains a vertical scrollbar */
+  const scrollH =
+    isMobileLayout() && scroll && typeof scroll.clientHeight === "number"
+      ? scroll.clientHeight | 0
+      : 0;
+  if (scrollH > 48 && h > scrollH) {
+    const minDie = 52;
+    while (diePx > minDie && h > scrollH) {
+      diePx -= 6;
+      cols = Math.max(1, Math.min(diceCount, Math.floor((w + gap) / (diePx + gap))));
+      rows = Math.max(1, Math.ceil(diceCount / cols));
+      h = Math.max(1, rows * (diePx + gap) - gap + padExtra);
+    }
+  }
 
   ctx.renderer.setSize(w, h, false);
   ctx.renderer.domElement.style.width = "100%";
@@ -1292,6 +1308,20 @@ function layoutThreeCanvas(diceCount) {
   ctx.camera.updateProjectionMatrix();
 
   return { w, h, diePx, gap, cols, rows };
+}
+
+/** When mobile flex heights settle, reclamp canvas without relying on window.resize alone */
+function initMobileRenderPanelResizeObserver() {
+  const panel = document.getElementById("renderPanel");
+  if (!panel || typeof ResizeObserver === "undefined") return;
+  let t = 0;
+  const ro = new ResizeObserver(() => {
+    if (!isMobileLayout()) return;
+    if (!document.body.classList.contains("mobile-roll-view")) return;
+    window.cancelAnimationFrame(t);
+    t = window.requestAnimationFrame(() => syncDiceMeshesFromState());
+  });
+  ro.observe(panel);
 }
 
 function syncDiceMeshesFromState() {
@@ -2153,6 +2183,7 @@ function init() {
   }
   syncMobileTapHint();
   syncMobileRemoveSidesBtn();
+  initMobileRenderPanelResizeObserver();
 
   MOBILE_MQ.addEventListener("change", () => {
     if (isMobileLayout()) {
