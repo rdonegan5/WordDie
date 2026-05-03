@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#141922"/>
+      <stop offset="100%" stop-color="#0d1018"/>
+    </linearGradient>
+    <clipPath id="iconRoundClip"><rect width="512" height="512" rx="112"/></clipPath>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <g clip-path="url(#iconRoundClip)" shape-rendering="crispEdges">
+    <polygon points="256.00,256.00 6.00,256.00 18.24,178.75" fill="#b74d5b" stroke="none"/>
+    <polygon points="256.00,256.00 18.24,178.75 53.75,109.05" fill="#b34b59" stroke="none"/>
+    <polygon points="256.00,256.00 53.75,109.05 109.05,53.75" fill="#ab4855" stroke="none"/>
+    <polygon points="256.00,256.00 109.05,53.75 178.75,18.24" fill="#a14450" stroke="none"/>
+    <polygon points="256.00,256.00 178.75,18.24 256.00,6.00" fill="#953f4a" stroke="none"/>
+    <polygon points="256.00,256.00 256.00,6.00 381.00,39.49" fill="#356a9a" stroke="none"/>
+    <polygon points="256.00,256.00 381.00,39.49 472.51,131.00" fill="#2e5c86" stroke="none"/>
+    <polygon points="256.00,256.00 472.51,131.00 506.00,256.00" fill="#2a547a" stroke="none"/>
+    <polygon points="256.00,256.00 506.00,256.00 432.78,432.78" fill="#867522" stroke="none"/>
+    <polygon points="256.00,256.00 432.78,432.78 256.00,506.00" fill="#a08c28" stroke="none"/>
+    <polygon points="256.00,256.00 256.00,506.00 6.00,256.00" fill="#7bb251" stroke="none"/>
+  </g>
+  <rect width="512" height="512" rx="112" fill="none" stroke="#05070c" stroke-width="3"/>
+</svg>
